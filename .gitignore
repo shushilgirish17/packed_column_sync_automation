@@ -1,0 +1,27 @@
+# Runtime output — column-type exports and generated import files
+/exports/*
+!/exports/.gitkeep
+
+# Runtime "queue" — jobs produced/consumed by the demo pipeline
+/watch/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local config — copy .env.example to .env and keep .env out of git
+.env
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+*~
+
+# Local Claude Code settings (keep out of shared history)
+.claude/settings.local.json
+
+# pytest
+.pytest_cache/
