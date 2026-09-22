@@ -59,7 +59,12 @@ class Settings:
     watch_dir: pathlib.Path           # local "queue" the agent watches
     benchling_url: str                # e.g. https://<tenant>.benchling.com
     benchling_api_key: str            # secret; keep in .env only
-    benchling_entity_schema: str      # Packed Column schema id/name
+    benchling_client_id: str          # Benchling App (OAuth2) client id
+    benchling_client_secret: str      # secret; keep in .env only
+    benchling_entity_schema: str      # Packed Column entity schema id
+    benchling_packing_schema: str     # Column Packing result schema id
+    benchling_resin_schema: str       # Resin Characteristics Library result schema id
+    benchling_hardware_schema: str    # Column Hardware (Non-SAP Raw Material) schema id
 
 
 settings = Settings(
@@ -71,5 +76,11 @@ settings = Settings(
     watch_dir=pathlib.Path(_get("WATCH_DIR", str(ROOT / "watch"))),
     benchling_url=_get("BENCHLING_URL", ""),
     benchling_api_key=_get("BENCHLING_API_KEY", ""),
-    benchling_entity_schema=_get("BENCHLING_ENTITY_SCHEMA", "Packed Column"),
+    benchling_client_id=_get("BENCHLING_CLIENT_ID", ""),
+    benchling_client_secret=_get("BENCHLING_CLIENT_SECRET", ""),
+    # Real schema ids for the lilly-prd-dev-vc tenant (from the mapping doc).
+    benchling_entity_schema=_get("BENCHLING_ENTITY_SCHEMA", "ts_AJliSA2awf"),
+    benchling_packing_schema=_get("BENCHLING_PACKING_SCHEMA", "assaysch_InEaOqToeK"),
+    benchling_resin_schema=_get("BENCHLING_RESIN_SCHEMA", "assaysch_yNYYArXbpH"),
+    benchling_hardware_schema=_get("BENCHLING_HARDWARE_SCHEMA", "ts_a78KBDyDmA"),
 )

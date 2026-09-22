@@ -30,14 +30,44 @@ def test_gate_passes_for_qualified_active():
     assert ok and reasons == []
 
 
-def test_gate_blocks_failed_qc():
+def test_gate_is_status_only_qc_does_not_block():
+    # Current policy (intentional): sync_gate keys off Column Status ONLY; the
+    # QC checks are disabled, so a failed pack QC alone no longer blocks as long
+    # as the column is Active. Re-enable the QC lines in generate_import to
+    # restore the stricter rule (and flip this test back).
     ok, reasons = gi.sync_gate(base_rec(column_pack_qc="Fail"))
-    assert not ok and any("Column Pack QC" in r for r in reasons)
+    assert ok and reasons == []
 
 
 def test_gate_blocks_inactive():
     ok, reasons = gi.sync_gate(base_rec(column_status="Inactive"))
     assert not ok
+
+
+# --- unknown resin: create with 0 placeholders, not skipped or NULL ----------
+def test_unknown_resin_uses_blank_template():
+    d = gi.resin_params(base_rec(resin_type="MabSelect SuRe"))
+    # DB-required fields default to 0 (UNICORN rejects NULL for these);
+    # technique stays blank (nullable) and is omitted from the XML.
+    assert d["default_flowrate"] == 0 and d["max_flowrate"] == 0
+    assert d["pre_column_pressure"] == 0 and d["delta_column_pressure"] == 0
+    assert d["technique_xml"] is None
+
+
+def test_unknown_resin_builds_valid_zip_with_zero_flow(tmp_path):
+    rec = base_rec(resin_type="MabSelect SuRe")
+    name, h, _run, _d, _o = gi.build_rows(rec)
+    xml = gi.build_xml(rec, name, h).decode()
+    # required flow/pressure present as 0 (never NULL/omitted -> import would fail)
+    assert "<DefaultFlowrate>0</DefaultFlowrate>" in xml
+    assert "<MaxFlowrate>0</MaxFlowrate>" in xml
+    assert "<PreColumnPressure>0</PreColumnPressure>" in xml
+    assert "<DeltaColumnPressure>0</DeltaColumnPressure>" in xml
+    # technique has no value -> omitted entirely (nullable, like the pH fields)
+    assert "<TechniqueName>" not in xml
+    zip_path = tmp_path / "blank.zip"
+    uc.build_archive(gi.build_xml(rec, name, h), str(zip_path))
+    assert uc.verify_archive(str(zip_path)) == []
 
 
 # --- bed height ------------------------------------------------------------

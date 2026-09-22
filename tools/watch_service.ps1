@@ -81,11 +81,17 @@ function Process-Job($jobFile) {
 
     # Ensure UNICORN is up, logged in, and Column Handling is open before the
     # sync. Idempotent and fast when it already is.
+    # NB: run child scripts with EAP=Continue locally - a child writing to
+    # stderr surfaces as a NativeCommandError that, under this script's Stop
+    # preference, would otherwise KILL the whole watcher on one bad job.
     Log "  ensuring UNICORN ready..."
+    $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     & powershell -NoProfile -ExecutionPolicy Bypass -File $ensureScript 2>&1 |
         Out-File -FilePath $log -Encoding utf8
-    if ($LASTEXITCODE -ne 0) {
-        "`n[ensure_unicorn failed: exit $LASTEXITCODE]" | Out-File -FilePath $log -Append -Encoding utf8
+    $ensureCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+    if ($ensureCode -ne 0) {
+        "`n[ensure_unicorn failed: exit $ensureCode]" | Out-File -FilePath $log -Append -Encoding utf8
         Log "  FAILED (UNICORN not ready) -> failed/ (log: $log)"
         Move-Pair $procJob $job.zip $failed
         return
@@ -97,8 +103,10 @@ function Process-Job($jobFile) {
     if ($procZip)  { $args += @('-ImportZip', $procZip) }
 
     Log "  running sync_column..."
+    $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     $out = & powershell @args 2>&1
     $code = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
     $out | Out-File -FilePath $log -Append -Encoding utf8
     "`n[exit $code]" | Out-File -FilePath $log -Append -Encoding utf8
 
@@ -112,15 +120,39 @@ function Process-Job($jobFile) {
 }
 
 function Invoke-Sweep {
-    # Process every job currently waiting, oldest first.
+    # Process every job currently waiting, oldest first. Each job is isolated:
+    # a crash in one must never take down the watcher (it has to keep serving).
     $jobs = Get-ChildItem -Path $incoming -Filter '*.job.json' -ErrorAction SilentlyContinue | Sort-Object Name
-    foreach ($j in $jobs) { Process-Job $j.FullName }
+    foreach ($j in $jobs) {
+        try { Process-Job $j.FullName }
+        catch {
+            Log "  ! job '$($j.Name)' crashed: $($_.Exception.Message)"
+            try { if (Test-Path $j.FullName) { Move-Item $j.FullName $failed -Force } } catch {}
+        }
+    }
+}
+
+function Recover-Processing {
+    # A job left in processing/ means a previous run was interrupted mid-job
+    # (e.g. the watcher was killed by an undismissed dialog). Requeue it to
+    # incoming/ so it is retried. The sync is idempotent - if the column was
+    # already imported it takes the safe Edit path - and the per-job try/catch
+    # now routes a repeat crash to failed/ instead of killing the watcher.
+    $orphans = Get-ChildItem -Path $processing -Filter '*.job.json' -ErrorAction SilentlyContinue
+    foreach ($o in $orphans) {
+        $zip = $null
+        try { $zip = (Get-Content $o.FullName -Raw | ConvertFrom-Json).zip } catch {}
+        Log "recovering interrupted job '$($o.BaseName)' from processing/ -> incoming/ (will retry)"
+        Move-Pair $o.FullName $zip $incoming
+    }
 }
 
 Log "watch_service started - watching $incoming"
 Log "(sync target: $($cfg.UnicornProcess) / '$($cfg.ColumnDialogTitle)', WinAppDriver $($cfg.WinAppDriverUrl))"
 
-# Handle anything already sitting in the folder (e.g. produced while we were down).
+# Requeue anything left mid-flight by a previous interrupted run, then handle
+# everything already sitting in the folder.
+Recover-Processing
 Invoke-Sweep
 
 if ($Once) { Log "done (single pass)"; return }
@@ -143,5 +175,6 @@ while ($true) {
         Log "new job detected: $($chg.Name)"
         Start-Sleep -Milliseconds 700   # let the producer finish writing
     }
-    Invoke-Sweep
+    try { Invoke-Sweep }
+    catch { Log "  ! sweep error (continuing): $($_.Exception.Message)" }
 }

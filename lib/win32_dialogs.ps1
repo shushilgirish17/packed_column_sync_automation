@@ -78,7 +78,9 @@ public class W32Dlg{
 }
 "@
 
-$script:BM_CLICK        = 0x00F5
+$script:BM_CLICK         = 0x00F5
+$script:WM_COMMAND       = 0x0111
+$script:BN_CLICKED       = 0
 $script:SMTO_ABORTIFHUNG = 0x0002
 
 function Find-UnicornDialog {
@@ -137,11 +139,27 @@ function Invoke-DialogButton {
         return $false
     }
     $res = [IntPtr]::Zero
-    [void][W32Dlg]::SendMessageTimeout($btn.Handle, $script:BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero,
-                                       $script:SMTO_ABORTIFHUNG, 3000, [ref]$res)
+    # Two message-based presses, both confirmed to work on a real UNICORN box
+    # (see header). Try BM_CLICK on the button first, then, if it is still open,
+    # WM_COMMAND(BN_CLICKED, id) to the dialog - a redundant path in case the
+    # first is ignored. Neither steals focus or moves the cursor.
+    $click = {
+        [void][W32Dlg]::SendMessageTimeout($btn.Handle, $script:BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero,
+                                           $script:SMTO_ABORTIFHUNG, 3000, [ref]$res)
+    }
+    $command = {
+        $wparam = [IntPtr](($script:BN_CLICKED -shl 16) -bor ($btn.Id -band 0xFFFF))
+        [void][W32Dlg]::SendMessageTimeout($Dialog, $script:WM_COMMAND, $wparam, $btn.Handle,
+                                           $script:SMTO_ABORTIFHUNG, 3000, [ref]$res)
+    }
+    & $click
     $deadline = [Environment]::TickCount + $TimeoutMs
+    $usedCommand = $false
     while ([Environment]::TickCount -lt $deadline) {
         if (-not [W32Dlg]::IsWindow($Dialog)) { return $true }
+        if (-not $usedCommand -and [Environment]::TickCount -gt ($deadline - $TimeoutMs + 1500)) {
+            & $command; $usedCommand = $true
+        }
         Start-Sleep -Milliseconds 150
     }
     return (-not [W32Dlg]::IsWindow($Dialog))
@@ -161,4 +179,65 @@ function Wait-UnicornDialog {
         Start-Sleep -Milliseconds 250
     }
     return [IntPtr]::Zero
+}
+
+function Find-UnicornMessageBox {
+    <#
+      Find a dismissable UNICORN message box / confirmation, title-independent.
+
+      Both the "Import was successful" box AND the file-open browser are titled
+      'Import', so title matching is useless here. Distinguish by BUTTONS:
+      an info/confirm/error box we must dismiss carries a button captioned
+      OK / Yes / Close / Continue / Done; the file-open browser carries
+      Open / Cancel (no such caption) and UNICORN's normal/owner-drawn windows
+      carry no standard Win32 buttons at all. So "a top-level UNICORN window
+      with a standard Dismiss-captioned button" is the reliable signature.
+    #>
+    param(
+        [string[]]$DismissCaptions = @('OK', 'Yes', 'Close', 'Continue', 'Done'),
+        [string]$ProcessName = 'UNICORNClient'
+    )
+    $p = Get-Process $ProcessName -ErrorAction SilentlyContinue
+    if (-not $p) { return [IntPtr]::Zero }
+    foreach ($h in [W32Dlg]::TopLevel($p.Id)) {
+        $caps = @(Get-DialogButtons -Dialog $h | ForEach-Object { $_.Text })
+        if ($caps | Where-Object { $DismissCaptions -contains $_ }) { return $h }
+    }
+    return [IntPtr]::Zero
+}
+
+function Wait-UnicornMessageBox {
+    <# Wait for any dismissable UNICORN message box to appear; handle or Zero. #>
+    param(
+        [string[]]$DismissCaptions = @('OK', 'Yes', 'Close', 'Continue', 'Done'),
+        [int]$TimeoutMs = 15000
+    )
+    $deadline = [Environment]::TickCount + $TimeoutMs
+    while ([Environment]::TickCount -lt $deadline) {
+        $h = Find-UnicornMessageBox -DismissCaptions $DismissCaptions
+        if ($h -ne [IntPtr]::Zero) { return $h }
+        Start-Sleep -Milliseconds 250
+    }
+    return [IntPtr]::Zero
+}
+
+function Close-UnicornMessageBox {
+    <#
+      Dismiss a message box by pressing the first available of the preferred
+      captions (OK/Yes/Close/...), falling back to the first enabled button.
+      Returns $true if the window closed. Reports what it said for the log.
+    #>
+    param(
+        [Parameter(Mandatory)][IntPtr]$Dialog,
+        [string[]]$PreferButtons = @('OK', 'Yes', 'Close', 'Continue', 'Done'),
+        [int]$TimeoutMs = 6000
+    )
+    $btns = @(Get-DialogButtons -Dialog $Dialog)
+    foreach ($cap in $PreferButtons) {
+        $b = $btns | Where-Object { $_.Text -eq $cap -and $_.Enabled } | Select-Object -First 1
+        if ($b) { return (Invoke-DialogButton -Dialog $Dialog -Text $cap -TimeoutMs $TimeoutMs) }
+    }
+    $b = $btns | Where-Object { $_.Enabled } | Select-Object -First 1
+    if ($b) { return (Invoke-DialogButton -Dialog $Dialog -Text $b.Text -TimeoutMs $TimeoutMs) }
+    return $false
 }

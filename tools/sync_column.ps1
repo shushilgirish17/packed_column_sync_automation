@@ -160,6 +160,18 @@ if ($sw.ElapsedMilliseconds -gt 5000 -or $typed -eq 0) {
 }
 Info "healthy - $($u.ProcessName) pid=$($u.Id), $($kids.Count) children in $($sw.ElapsedMilliseconds) ms"
 
+# A message box left open by a previous crashed/interrupted run (e.g. an
+# undismissed "Import was successful" box) sits modal over the main dialog and
+# makes WinAppDriver fail with "unknown error" when it attaches. Clear any such
+# stray box before creating the session so a bad prior run can't poison this one.
+$stray = Find-UnicornMessageBox
+if ($stray -ne [IntPtr]::Zero) {
+    $msg = (@([W32Dlg]::Texts($stray)) | Where-Object { $_ -notmatch '^(OK|Yes|No|Close|Cancel)$' } | Select-Object -First 2) -join ' '
+    Info "clearing stray dialog from a previous run: '$msg'"
+    [void](Close-UnicornMessageBox -Dialog $stray)
+    Start-Sleep -Milliseconds 500
+}
+
 $sess = Wad POST '/session' @{ desiredCapabilities = @{ platformName = 'Windows'; appTopLevelWindow = ('0x{0:x}' -f [int64]$owner) } }
 $sid = $sess.sessionId
 try {
@@ -256,15 +268,36 @@ else {
         MouseClick $sel $ok.Current.BoundingRectangle
         Start-Sleep -Milliseconds 1500
     }
-    $done = Wait-UnicornDialog -TitleStartsWith 'Import' -TimeoutMs 8000   # success/info box
-    if ($done -ne [IntPtr]::Zero) { [void](Invoke-DialogButton -Dialog $done -Text 'OK'); Info "import confirmed" }
-    else { Info "no confirmation dialog (already applied)" }
+    # Wait for the "Import was successful" box and dismiss it. A create/import
+    # writes to the shared central DB and can be SLOW (>30s under load), and its
+    # box carries a generic title, so match by signature (a UNICORN window with
+    # a Dismiss-captioned button) and wait generously. Leaving it open blocks
+    # the main dialog and fails the read-back with WinAppDriver 'unknown error'.
+    $done = Wait-UnicornMessageBox -TimeoutMs 90000
+    if ($done -ne [IntPtr]::Zero) {
+        $msg = (@([W32Dlg]::Texts($done)) | Where-Object { $_ -notmatch '^(OK|Yes|No|Close|Cancel)$' } | Select-Object -First 2) -join ' '
+        if (Close-UnicornMessageBox -Dialog $done) { Info "import confirmed - dismissed '$msg'" }
+        else { Die 1 "import confirmation dialog would not close: '$msg'" }
+    }
+    else { Info "no confirmation dialog seen" }
 }
 
 # ---------------------------------------------------------------------------
 # 5. Read-back
 # ---------------------------------------------------------------------------
 Step "Read-back"
+# Safety net for a late confirmation box: an import box can appear just after
+# the wait above returned, and any open modal makes the next WinAppDriver call
+# fail with 'unknown error'. Clear anything lingering (and give a slow import a
+# little longer to surface its box) before we drive WinAppDriver again.
+for ($i = 0; $i -lt 30; $i++) {
+    $lingering = Find-UnicornMessageBox
+    if ($lingering -eq [IntPtr]::Zero) { break }
+    $lmsg = (@([W32Dlg]::Texts($lingering)) | Where-Object { $_ -notmatch '^(OK|Yes|No|Close|Cancel)$' } | Select-Object -First 1)
+    Info "dismissing lingering dialog before read-back: '$lmsg'"
+    [void](Close-UnicornMessageBox -Dialog $lingering)
+    Start-Sleep -Milliseconds 500
+}
 $se = (Wad POST "/session/$sid/element" @{ using = 'accessibility id'; value = 'txtSearch' }).value.ELEMENT
 Wad POST "/session/$sid/element/$se/clear" @{} | Out-Null
 Wad POST "/session/$sid/element/$se/value" @{ value = @($ColumnName) } | Out-Null
@@ -318,6 +351,13 @@ else { Write-Host "RESULT: SYNC FAILED (read-back mismatch)" -ForegroundColor Re
         Write-Host "    (cleanup) closing stray Edit dialog" -ForegroundColor Yellow
         [void][Nav]::SetForegroundWindow($stray); Start-Sleep -Milliseconds 500
         [System.Windows.Forms.SendKeys]::SendWait('{ESC}'); Start-Sleep -Milliseconds 800
+    }
+    # Also dismiss any message box (e.g. an "Import was successful" / error box)
+    # so a failure mid-import never leaves a modal blocking the next job.
+    $box = Find-UnicornMessageBox
+    if ($box -ne [IntPtr]::Zero) {
+        Write-Host "    (cleanup) closing stray message box" -ForegroundColor Yellow
+        [void](Close-UnicornMessageBox -Dialog $box)
     }
 }
 if ($null -eq $exit) { $exit = 1 }
