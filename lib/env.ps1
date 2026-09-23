@@ -46,6 +46,7 @@ function Get-ProjectConfig {
         UnicornExe        = Resolve-Val 'UNICORN_EXE'    ''
         UnicornUser       = Resolve-Val 'UNICORN_USER'   ''
         UnicornModule     = Resolve-Val 'UNICORN_MODULE' 'Evaluation'
+        WinAppDriverExe   = Resolve-Val 'WINAPPDRIVER_EXE' ''
     }
 }
 

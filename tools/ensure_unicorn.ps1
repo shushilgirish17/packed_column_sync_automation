@@ -24,8 +24,9 @@ visible. The "already running -> open Column Handling" path is verified.
 #>
 
 param(
-    [int]$LoginTimeoutSec = 60,     # wait for the Login dialog after launch
-    [int]$StartupWaitSec  = 120     # wait for modules to load after LOG IN
+    [int]$LoginTimeoutSec = 60,       # wait for the Login dialog after launch
+    [int]$StartupWaitSec  = 120,      # wait for modules to load after LOG IN
+    [int]$PostLaunchSettleSec = 15    # let a freshly launched UNICORN quiesce
 )
 
 $ErrorActionPreference = 'Stop'
@@ -167,6 +168,36 @@ function Do-Login {
     return $true
 }
 
+function Ensure-WinAppDriver {
+    # sync_column talks to WinAppDriver (port 4723). It is a SEPARATE server from
+    # UNICORN and nothing else starts it, so make sure it is up here.
+    $url = $cfg.WinAppDriverUrl
+    try { Invoke-RestMethod -Uri "$url/status" -TimeoutSec 3 | Out-Null; Log "WinAppDriver already running"; return $true } catch {}
+
+    $exe = $cfg.WinAppDriverExe
+    if (-not $exe -or -not (Test-Path $exe)) {
+        $exe = @(
+            'C:\Program Files (x86)\Windows Application Driver\WinAppDriver.exe',
+            'C:\Program Files\Windows Application Driver\WinAppDriver.exe'
+        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    }
+    if (-not $exe) { Log "WinAppDriver.exe not found - set WINAPPDRIVER_EXE in .env"; return $false }
+
+    Log "WinAppDriver not running - starting $exe"
+    Start-Process -FilePath $exe | Out-Null
+    for ($i = 0; $i -lt 20; $i++) {
+        Start-Sleep -Milliseconds 750
+        try { Invoke-RestMethod -Uri "$url/status" -TimeoutSec 3 | Out-Null; Log "WinAppDriver ready"; return $true } catch {}
+    }
+    Log "WinAppDriver did not become reachable at $url"
+    return $false
+}
+
+# ---------------------------------------------------------------------------
+# 0. Make sure WinAppDriver (the automation server) is up.
+# ---------------------------------------------------------------------------
+if (-not (Ensure-WinAppDriver)) { Log "cannot proceed without WinAppDriver"; exit 1 }
+
 # ---------------------------------------------------------------------------
 # 1. Get UNICORN to a logged-in state with a module window open.
 #    States handled: already logged in / sitting at Login / not running.
@@ -213,6 +244,13 @@ else {
     }
     if (-not (Module-WindowPresent)) { Log "UNICORN did not open a module window in ${StartupWaitSec}s - aborting"; exit 1 }
     Log "UNICORN modules loaded"
+
+    # A just-launched UNICORN is still wiring up its DB connection and dialogs;
+    # firing an import immediately races that and can drop keystrokes / reject
+    # the file. Give a freshly launched instance a moment to quiesce. (Only on a
+    # cold launch - the already-running path above skips this.)
+    Log "letting a freshly launched UNICORN settle for ${PostLaunchSettleSec}s..."
+    Start-Sleep -Seconds $PostLaunchSettleSec
 }
 
 # ---------------------------------------------------------------------------

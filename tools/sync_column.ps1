@@ -257,27 +257,57 @@ else {
     $fd = [IntPtr]::Zero
     for ($i = 0; $i -lt 30 -and $fd -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 500; $fd = [Nav]::FindEq($u.Id, 'Import') }
     if ($fd -eq [IntPtr]::Zero) { Die 1 "Import file dialog did not open." }
-    [void][Nav]::SetForegroundWindow($fd); Start-Sleep -Milliseconds 700
-    [System.Windows.Forms.SendKeys]::SendWait('^a'); Start-Sleep -Milliseconds 150
-    [System.Windows.Forms.SendKeys]::SendWait($zip); Start-Sleep -Milliseconds 300
-    [System.Windows.Forms.SendKeys]::SendWait('{ENTER}'); Start-Sleep -Milliseconds 1500
 
-    $sel = [Nav]::FindEq($u.Id, 'Import Column Type')
-    if ($sel -ne [IntPtr]::Zero) {
-        $ok = Find-Button ($AE::FromHandle($sel)) 'btnOK'
-        MouseClick $sel $ok.Current.BoundingRectangle
-        Start-Sleep -Milliseconds 1500
+    # Type the path into the Open dialog and CONFIRM it was accepted (the dialog
+    # closes). On a cold-started UNICORN the dialog can still be settling, so the
+    # first keystrokes may be dropped - which previously selected the wrong file
+    # and produced a bogus "checksum failed". Retry the path entry until the
+    # Open dialog actually closes.
+    $accepted = $false
+    for ($attempt = 1; $attempt -le 3 -and -not $accepted; $attempt++) {
+        [void][Nav]::SetForegroundWindow($fd); Start-Sleep -Milliseconds 700
+        [System.Windows.Forms.SendKeys]::SendWait('^a'); Start-Sleep -Milliseconds 150
+        [System.Windows.Forms.SendKeys]::SendWait($zip); Start-Sleep -Milliseconds 250
+        [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+        for ($w = 0; $w -lt 15; $w++) {
+            Start-Sleep -Milliseconds 400
+            if (-not [W32Dlg]::IsWindow($fd)) { $accepted = $true; break }
+        }
+        if (-not $accepted) { Info "  Open dialog still up (attempt $attempt/3) - retrying path entry" }
     }
-    # Wait for the "Import was successful" box and dismiss it. A create/import
-    # writes to the shared central DB and can be SLOW (>30s under load), and its
-    # box carries a generic title, so match by signature (a UNICORN window with
-    # a Dismiss-captioned button) and wait generously. Leaving it open blocks
-    # the main dialog and fails the read-back with WinAppDriver 'unknown error'.
+    if (-not $accepted) { Die 1 "Open dialog did not accept the import path (still open after retries)." }
+
+    # The "Import Column Type" confirm dialog appears a moment AFTER the Open
+    # dialog closes - slower on a cold-started UNICORN. Checking once immediately
+    # misses it, so the OK never gets clicked and the dialog sits there blocking
+    # (this is the "stuck OK modal"). WAIT for it (up to ~15s), then click OK and
+    # confirm it closes, retrying the click a couple of times. It's owner-drawn,
+    # so it is not a standard message box - locate btnOK via UIA, click via mouse.
+    $sel = [IntPtr]::Zero
+    for ($i = 0; $i -lt 30 -and $sel -eq [IntPtr]::Zero; $i++) {
+        Start-Sleep -Milliseconds 500; $sel = [Nav]::FindEq($u.Id, 'Import Column Type')
+    }
+    if ($sel -ne [IntPtr]::Zero) {
+        for ($c = 1; $c -le 3 -and [W32Dlg]::IsWindow($sel); $c++) {
+            $ok = Find-Button ($AE::FromHandle($sel)) 'btnOK'
+            if ($ok) { MouseClick $sel $ok.Current.BoundingRectangle }
+            for ($w = 0; $w -lt 6 -and [W32Dlg]::IsWindow($sel); $w++) { Start-Sleep -Milliseconds 400 }
+        }
+        if ([W32Dlg]::IsWindow($sel)) { Die 1 "'Import Column Type' dialog would not close (OK not accepted)." }
+        Info "import options confirmed"
+    }
+    else { Info "no 'Import Column Type' dialog (import may proceed directly)" }
+    # Wait for the result box and dismiss it. A create/import writes to the
+    # shared central DB and can be SLOW (>30s under load); its box carries a
+    # generic title, so match by signature. Then CLASSIFY: only a "success"
+    # message counts - anything else (e.g. "Check sum failed") is a real import
+    # failure and must fail loudly, not be mistaken for a confirmation.
     $done = Wait-UnicornMessageBox -TimeoutMs 90000
     if ($done -ne [IntPtr]::Zero) {
         $msg = (@([W32Dlg]::Texts($done)) | Where-Object { $_ -notmatch '^(OK|Yes|No|Close|Cancel)$' } | Select-Object -First 2) -join ' '
-        if (Close-UnicornMessageBox -Dialog $done) { Info "import confirmed - dismissed '$msg'" }
-        else { Die 1 "import confirmation dialog would not close: '$msg'" }
+        if (-not (Close-UnicornMessageBox -Dialog $done)) { Die 1 "import result dialog would not close: '$msg'" }
+        if ($msg -match '(?i)success') { Info "import confirmed - '$msg'" }
+        else { Die 1 "import failed: '$msg'" }
     }
     else { Info "no confirmation dialog seen" }
 }
@@ -346,11 +376,14 @@ else { Write-Host "RESULT: SYNC FAILED (read-back mismatch)" -ForegroundColor Re
     # block the main dialog and poison the next run). Esc cancels it,
     # discarding any partial change. Esc is more reliable here than clicking
     # the owner-drawn Cancel button.
-    $stray = [Nav]::FindPre($u.Id, 'Edit Column type')
-    if ($stray -ne [IntPtr]::Zero) {
-        Write-Host "    (cleanup) closing stray Edit dialog" -ForegroundColor Yellow
-        [void][Nav]::SetForegroundWindow($stray); Start-Sleep -Milliseconds 500
-        [System.Windows.Forms.SendKeys]::SendWait('{ESC}'); Start-Sleep -Milliseconds 800
+    foreach ($strayTitle in @('Edit Column type', 'Import Column Type')) {
+        $stray = [Nav]::FindPre($u.Id, $strayTitle)
+        if ($stray -eq [IntPtr]::Zero) { $stray = [Nav]::FindEq($u.Id, $strayTitle) }
+        if ($stray -ne [IntPtr]::Zero) {
+            Write-Host "    (cleanup) closing stray '$strayTitle' dialog" -ForegroundColor Yellow
+            [void][Nav]::SetForegroundWindow($stray); Start-Sleep -Milliseconds 500
+            [System.Windows.Forms.SendKeys]::SendWait('{ESC}'); Start-Sleep -Milliseconds 800
+        }
     }
     # Also dismiss any message box (e.g. an "Import was successful" / error box)
     # so a failure mid-import never leaves a modal blocking the next job.
