@@ -1,0 +1,4 @@
+-r requirements.txt
+# provided by the Lambda runtime; needed only for local runs
+boto3
+pytest

@@ -1,0 +1,17 @@
+# Benchling App manifest (Developer Console -> App -> Import manifest). Check against the
+# current Benchling manifest schema before importing.
+manifestVersion: 1
+info:
+  name: UNICORN Column Sync
+  description: Generates UNICORN Column Type import files for Packed Columns
+  version: 0.0.2
+features:
+  - name: Sync to UNICORN
+    id: unicorn_column_sync
+    type: CANVAS
+subscriptions:
+  deliveryMethod: WEBHOOK
+  messages:
+    - type: v2.canvas.initialized
+    - type: v2.canvas.userInteracted
+    - type: v2.canvas.created
