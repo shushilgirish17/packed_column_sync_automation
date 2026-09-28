@@ -1,13 +1,2 @@
-# Runtime dependencies: NONE.
-#
-# This project runs on the Python standard library only. WinAppDriver is driven
-# over plain HTTP (see lib/wad.py) rather than via Appium/Selenium, and .env is
-# parsed by a small stdlib loader (see lib/config.py). So no `pip install` is
-# required to run the sync pipeline.
-#
-# Development / optional tooling lives in requirements-dev.txt.
-#
-# One optional runtime dep, used ONLY by tools/benchling_pull.py in real mode
-# (its --mock mode needs nothing). Install it only if you pull from Benchling:
-#   pip install benchling-sdk
-# benchling-sdk>=1.15
+# Required by the SQS/S3 polling producer in tools/sqs_pull.py.
+boto3>=1.34,<2

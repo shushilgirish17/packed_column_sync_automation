@@ -1,10 +1,6 @@
-# Development / optional tooling. Not needed to run the sync pipeline.
+# Development tooling. Not needed to run the sync pipeline.
 #
 #   pip install -r requirements-dev.txt
 
 # Unit tests (tests/). PowerShell tests use Pester (Install-Module Pester).
 pytest>=8.0
-
-# Reading stakeholder PDFs (requirements decks, Cytiva guides) during analysis.
-pypdf>=5.0
-pillow>=10.0

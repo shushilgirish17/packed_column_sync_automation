@@ -1,15 +1,13 @@
 <#
 watch_service.ps1
 -----------------
-Background watcher - the on-prem "agent" for the demo. It monitors a local
-watch folder for jobs produced by benchling_pull.py and, for each one, runs
-the full UNICORN sync (search -> create/update -> verify) via sync_column.ps1.
-
-This is the local stand-in for the SQS/S3 consumer; the folder replaces the
-queue. Jobs are processed ONE AT A TIME (UNICORN has a single desktop).
+Consumer for the local handoff folder. It processes jobs from sqs_pull.py and
+runs the full UNICORN sync (search -> create/update -> verify) via
+sync_column.ps1. Jobs are processed ONE AT A TIME (UNICORN has a single
+desktop).
 
 Folder layout (created on first run under WATCH_DIR):
-    incoming/    <stem>.job.json + <stem>.zip   (benchling_pull drops here)
+    incoming/    <stem>.job.json + <stem>.zip   (a producer drops here)
     processing/  the job currently being run
     done/        succeeded
     failed/      failed (inspect the matching log)
@@ -21,8 +19,8 @@ Run it in a console for the demo:
   -Once          process whatever is waiting, then exit (good for a scripted demo)
   -IntervalSec   poll interval when looping (default 5)
 
-For production this same loop is what an Automation Anywhere bot / Task
-Scheduler job would run; nothing else changes.
+The SQS poller writes verified jobs to this folder. Keep the poller and this
+consumer running separately.
 #>
 
 param(
@@ -159,7 +157,7 @@ if ($Once) { Log "done (single pass)"; return }
 
 # Event-driven: block until a *.job.json is created, then process. The
 # IntervalSec timeout doubles as a periodic safety sweep so nothing is ever
-# missed if an event is lost. benchling_pull writes the .zip *before* the
+# missed if an event is lost. Producers write the .zip *before* the
 # .job.json, so by the time we react the payload is already complete; the
 # short settle covers any final flush.
 $fsw = New-Object System.IO.FileSystemWatcher

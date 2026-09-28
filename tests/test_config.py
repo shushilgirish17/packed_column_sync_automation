@@ -31,6 +31,5 @@ def test_load_env_file_missing_returns_empty(tmp_path):
 def test_settings_has_expected_shape():
     # Sanity: the frozen settings object exposes the documented knobs.
     for attr in ("winappdriver_url", "unicorn_process", "column_dialog_title",
-                 "import_access_scope", "exports_dir", "watch_dir",
-                 "benchling_url", "benchling_api_key", "benchling_entity_schema"):
+                 "import_access_scope", "exports_dir", "watch_dir"):
         assert hasattr(config.settings, attr)

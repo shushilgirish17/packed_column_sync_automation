@@ -1,6 +1,6 @@
 """
 Shared pytest setup: put lib/ and tools/ on the import path so the pure
-modules under test (unicorn_coltype, config, generate_import, benchling_pull)
+modules under test (unicorn_coltype, config, generate_import)
 import the same way they do at runtime.
 
 Only offline, deterministic logic is unit-tested here. Anything that needs a

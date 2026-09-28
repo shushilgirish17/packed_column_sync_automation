@@ -5,7 +5,7 @@ Central configuration, loaded from a `.env` file at the project root (with
 sensible defaults so the project runs without one).
 
 Deliberately dependency-free: a tiny stdlib parser reads `.env`, so the
-project keeps its "no pip install required to run" property. `.env` overrides
+configuration loader needs no third-party dependency. `.env` overrides
 defaults; real environment variables override `.env`.
 
 Usage:
@@ -57,14 +57,6 @@ class Settings:
     import_access_scope: str          # 'Personal' (test) or 'Global' (production)
     exports_dir: pathlib.Path
     watch_dir: pathlib.Path           # local "queue" the agent watches
-    benchling_url: str                # e.g. https://<tenant>.benchling.com
-    benchling_api_key: str            # secret; keep in .env only
-    benchling_client_id: str          # Benchling App (OAuth2) client id
-    benchling_client_secret: str      # secret; keep in .env only
-    benchling_entity_schema: str      # Packed Column entity schema id
-    benchling_packing_schema: str     # Column Packing result schema id
-    benchling_resin_schema: str       # Resin Characteristics Library result schema id
-    benchling_hardware_schema: str    # Column Hardware (Non-SAP Raw Material) schema id
 
 
 settings = Settings(
@@ -74,13 +66,4 @@ settings = Settings(
     import_access_scope=_get("IMPORT_ACCESS_SCOPE", "Personal"),
     exports_dir=pathlib.Path(_get("EXPORTS_DIR", str(ROOT / "exports"))),
     watch_dir=pathlib.Path(_get("WATCH_DIR", str(ROOT / "watch"))),
-    benchling_url=_get("BENCHLING_URL", ""),
-    benchling_api_key=_get("BENCHLING_API_KEY", ""),
-    benchling_client_id=_get("BENCHLING_CLIENT_ID", ""),
-    benchling_client_secret=_get("BENCHLING_CLIENT_SECRET", ""),
-    # Real schema ids for the lilly-prd-dev-vc tenant (from the mapping doc).
-    benchling_entity_schema=_get("BENCHLING_ENTITY_SCHEMA", "ts_AJliSA2awf"),
-    benchling_packing_schema=_get("BENCHLING_PACKING_SCHEMA", "assaysch_InEaOqToeK"),
-    benchling_resin_schema=_get("BENCHLING_RESIN_SCHEMA", "assaysch_yNYYArXbpH"),
-    benchling_hardware_schema=_get("BENCHLING_HARDWARE_SCHEMA", "ts_a78KBDyDmA"),
 )

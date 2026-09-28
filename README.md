@@ -29,14 +29,13 @@ lib/                       Reusable modules (no side effects on import)
   win32_dialogs.ps1        Press UNICORN message-box buttons without a real mouse
 
 tools/                     Runnable scripts
-  benchling_pull.py        PRODUCER: Benchling entity+result -> gate on Active
-                           -> build .zip -> drop job in the watch folder
+  sqs_pull.py              PRODUCER: poll SQS -> download/verify S3 archive -> queue job
   watch_service.ps1        CONSUMER: watch the folder, run sync_column per job
   sync_column.ps1          END-TO-END one column: search -> edit|import -> verify
   canary.ps1               Health check — run BEFORE any automation
   extract_column_types.ps1 Dump the whole Column Type library to CSV
   export_column_type.py    Export one column type to a .zip (inspect the format)
-  generate_import.py       Map a Benchling record -> UNICORN fields -> import .zip
+  generate_import.py       Offline sample/import archive generator
 
 fixtures/                  Test data
   export_sample_a/b.zip    Real UNICORN exports (prove the archive format)
@@ -57,8 +56,8 @@ anywhere — no absolute paths baked in.
   (`"C:\Program Files (x86)\Windows Application Driver\WinAppDriver.exe"`).
   Needed for clicks; not needed for the offline `generate_import.py` or the
   `.NET`-UIA-only reads.
-- **Python 3**. The pipeline uses the **standard library only** — no runtime
-  packages to install.
+- **Python 3**. The SQS/S3 producer uses `boto3`; the local automation and
+  archive tools otherwise use the standard library.
 
 ## Setup
 
@@ -66,15 +65,15 @@ anywhere — no absolute paths baked in.
 # 1. Configuration — copy the template and adjust if needed
 Copy-Item .env.example .env
 
-# 2. Virtual environment (optional; only needed for the dev tooling below)
+# 2. Virtual environment (recommended)
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements-dev.txt   # pypdf, pillow — for the doc utilities only
+pip install -r requirements.txt        # boto3 for the SQS/S3 producer
+pip install -r requirements-dev.txt    # pytest for the Python test suite
 ```
 
-`requirements.txt` is intentionally empty of runtime dependencies (see the file).
-Configuration lives in **`.env`** (git-ignored; copy from `.env.example`) and is
-read by both `lib/config.py` (Python) and `lib/env.ps1` (PowerShell):
+Configuration lives in **`.env`** (git-ignored; copy from `.env.example`) and
+is read by both `lib/config.py` (Python) and `lib/env.ps1` (PowerShell):
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -83,6 +82,9 @@ read by both `lib/config.py` (Python) and `lib/env.ps1` (PowerShell):
 | `COLUMN_DIALOG_TITLE` | `Column Handling` | dialog to attach to |
 | `IMPORT_ACCESS_SCOPE` | `Personal` | scope for generated imports (`Personal`/`Global`) |
 | `EXPORTS_DIR` | `<root>/exports` | where output is written |
+| `SQS_QUEUE_URL` | *(unset)* | required queue URL for `sqs_pull.py` |
+| `AWS_REGION` | `us-east-2` | AWS region for SQS/S3 |
+| `AWS_PROFILE` | *(default credential chain)* | optional named AWS profile |
 
 Precedence: real environment variable > `.env` > built-in default.
 
@@ -107,29 +109,35 @@ Or start with just the health check:
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\canary.ps1
 ```
 
-### Demo pipeline (local watch folder instead of AWS)
+### SQS/S3 pipeline
 
-Until cloud is provisioned, the AWS half (Lambda/S3/SQS) is replaced by a local
-watch folder. A manually-run producer generates jobs; a background watcher
-consumes them and drives UNICORN.
+The SQS producer long-polls the configured queue, downloads the archive from
+S3, verifies its UNICORN checksums, then writes the archive and job into
+`<WATCH_DIR>/incoming`. It acknowledges an SQS message only after handoff;
+invalid archives are placed in `failed/` and acknowledged so they are not
+retried indefinitely.
 
 ```powershell
-# 1. Producer — pull one Benchling record, gate on Column Status = Active,
-#    and drop a job (.zip + .job.json) into <WATCH_DIR>/incoming.
-python tools\benchling_pull.py --id COL0123      # real (needs Benchling creds)
-python tools\benchling_pull.py --mock            # demo, no creds; Active sample
-python tools\benchling_pull.py --mock-inactive   # shows the Active gate blocking
+# Start the SQS poller (AWS credentials must be available to boto3).
+python tools\sqs_pull.py
 
-# 2. Consumer — watch the folder; for each job run sync_column (create/update/
-#    verify), then move it to done/ or failed/ with a per-job log.
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\watch_service.ps1        # loop
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\watch_service.ps1 -Once  # one pass
+# Or poll the current queue once and exit when it is empty.
+python tools\sqs_pull.py --once
+
+# Run the watcher separately; it consumes incoming jobs and drives UNICORN.
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\watch_service.ps1
+
+# One pass through currently queued jobs, then exit.
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\watch_service.ps1 -Once
 ```
 
-Only **Active** columns produce a job; inactive/failed packs are logged and
-skipped. The watcher processes one job at a time (single UNICORN desktop). In
-production the folder becomes S3+SQS and the watcher becomes the Automation
-Anywhere bot — the per-job logic (sync_column) is unchanged.
+`watch_service.ps1` can be registered as a scheduled task as described below.
+The SQS poller must also be kept running on the Windows host; configure its
+startup separately for your deployment.
+
+The watcher processes jobs one at a time (UNICORN has a single desktop). It
+can also be registered as a scheduled task. For offline archive generation
+and format checks, see `tools/generate_import.py` and `lib/unicorn_coltype.py`.
 
 ### Run it continuously (auto-triggered)
 

@@ -10,7 +10,6 @@ that surface is exercised by the scripts in `tools/` against the real app.
 |---|---|---|
 | `test_unicorn_coltype.py` | `lib/unicorn_coltype.py` | CRC algorithms, manifest is byte-identical to real exports, verify/round-trip, corruption detection |
 | `test_generate_import.py` | `tools/generate_import.py` | qualification gate, bed-height derivation, field mapping, `build_xml` (incl. the passed-record regression) |
-| `test_benchling_pull.py` | `tools/benchling_pull.py` | mock record shape, resin parsing, `-Set` string, Active-only contract |
 | `test_config.py` | `lib/config.py` | `.env` parser (comments, quotes, first-`=` split) |
 | `pester/env.Tests.ps1` | `lib/env.ps1` | `Get-ProjectConfig` defaults + env-var override |
 

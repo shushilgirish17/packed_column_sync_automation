@@ -2,8 +2,8 @@
 install_watch_task.ps1
 ----------------------
 Register (or remove) the watch_service.ps1 watcher as an auto-starting
-background task, so the automation runs continuously and fires whenever
-benchling_pull.py drops a new job in the watch folder.
+background task, so the automation runs continuously and fires whenever a
+producer drops a new job in the watch folder.
 
 WHY A SCHEDULED TASK, NOT A WINDOWS SERVICE
 ===========================================

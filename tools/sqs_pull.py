@@ -2,7 +2,6 @@
 sqs_pull.py
 -----------
 Producer for the watch folder, fed by AWS instead of Benchling directly.
-Replaces benchling_pull.py in the cloud pipeline:
 
     Benchling canvas -> Lambda -> S3 (<stem>.zip + <stem>.job.json) + SQS message
                      -> sqs_pull.py -> <WATCH_DIR>/incoming -> watch_service.ps1 -> UNICORN
