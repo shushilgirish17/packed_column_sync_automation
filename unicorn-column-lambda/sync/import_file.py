@@ -98,8 +98,13 @@ def _safe(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("_")[:80]
 
 
-def queue_import_job(ct: ColumnType, digest: str) -> str:
-    """Write zip + job to S3 and notify SQS. Returns the SQS message id (or S3 / local job path)."""
+def queue_import_job(ct: ColumnType, digest: str, canvas_id: str = None) -> str:
+    """Write zip + job to S3 and notify SQS. Returns the SQS message id (or S3 / local job path).
+
+    canvas_id (canvas-triggered runs only) rides along in the job so the on-prem consumer can
+    report the real UNICORN outcome back to the same canvas once the import/edit actually
+    finishes - see canvas_handler.report_column_result.
+    """
     archive = build_archive_bytes(build_column_type_xml(ct))
     problems = verify_archive_bytes(archive)
     if problems:
@@ -115,6 +120,13 @@ def queue_import_job(ct: ColumnType, digest: str) -> str:
         "scope": config.IMPORT_ACCESS_SCOPE,
         "generatedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "contentHash": digest,
+        "canvasId": canvas_id,
+        # Which tenant's function created this job - both Zifo and Lilly currently share one
+        # SQS queue, so the on-prem consumer can't otherwise tell which Lambda to report back
+        # to. AWS sets this automatically at runtime; no config needed on either side.
+        "lambdaFunctionName": os.getenv("AWS_LAMBDA_FUNCTION_NAME"),
+        "benchlingEntityId": ct.source["benchling_entity_id"],
+        "benchlingRegistryId": ct.source.get("benchling_registry_id"),
         "benchling": ct.source,
         "placeholders": ct.unicorn.get("placeholders", []),
         "parameters": ct.parameters,

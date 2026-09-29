@@ -59,6 +59,61 @@ function Move-Pair($jobFile, $zipName, $destDir) {
     }
 }
 
+function Report-Completion($job, $code, $log) {
+    # Tell the Benchling canvas that queued this job what actually happened in UNICORN - the
+    # canvas only knows "Queued" until this arrives (see canvas_handler.report_column_result on
+    # the Lambda side). No-op for jobs with no canvasId (manual/local runs) or when reporting
+    # isn't configured (LAMBDA_FUNCTION_NAME unset) - never fails the job itself.
+    if (-not $job.canvasId) { return }
+    # Prefer the function that actually created this job (both tenants currently share one SQS
+    # queue, so jobs interleave) - fall back to the static config for older jobs without it.
+    $fn = if ($job.lambdaFunctionName) { $job.lambdaFunctionName } else { $cfg.LambdaFunctionName }
+    if (-not $fn) {
+        Log "  (no Lambda function known for canvas $($job.canvasId) - skipping report; set LAMBDA_FUNCTION_NAME)"
+        return
+    }
+
+    $result  = if ($code -eq 0) { 'Synced' } else { 'Failed' }
+    $message = if ($code -eq 0) { 'Synced to UNICORN' } else { "UNICORN sync failed (exit $code) - see log" }
+    $payload = @{
+        action        = 'report'
+        canvas_id     = $job.canvasId
+        column_id     = $job.benchlingEntityId
+        registry_id   = $job.benchlingRegistryId
+        column_name   = $job.columnName
+        result        = $result
+        message       = $message
+        column_type_name = $job.columnName
+        warnings      = $job.warnings
+    } | ConvertTo-Json -Compress -Depth 5
+
+    $payloadFile = [IO.Path]::GetTempFileName()
+    $outFile     = [IO.Path]::GetTempFileName()
+    try {
+        [IO.File]::WriteAllText($payloadFile, $payload, [Text.Encoding]::UTF8)
+        $awsArgs = @('lambda', 'invoke', '--function-name', $fn,
+                     '--payload', "fileb://$payloadFile", '--cli-binary-format', 'raw-in-base64-out')
+        if ($cfg.AwsProfile) { $awsArgs += @('--profile', $cfg.AwsProfile) }
+        if ($cfg.AwsRegion)  { $awsArgs += @('--region', $cfg.AwsRegion) }
+        $awsArgs += $outFile
+
+        $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+        $out = & aws @awsArgs 2>&1
+        $awsCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+        $resp = if (Test-Path $outFile) { Get-Content $outFile -Raw } else { '' }
+        "`n[report-completion exit $awsCode] $out`nresponse: $resp" | Out-File -FilePath $log -Append -Encoding utf8
+
+        if ($awsCode -eq 0) { Log "  reported '$result' to canvas $($job.canvasId)" }
+        else { Log "  ! failed to report '$result' to canvas $($job.canvasId) (aws exit $awsCode) - see log" }
+    } catch {
+        Log "  ! failed to report completion to canvas $($job.canvasId): $($_.Exception.Message)"
+        "`n[report-completion crashed] $($_.Exception.Message)" | Out-File -FilePath $log -Append -Encoding utf8
+    } finally {
+        Remove-Item $payloadFile, $outFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Process-Job($jobFile) {
     $stem = [IO.Path]::GetFileNameWithoutExtension($jobFile) -replace '\.job$', ''
     $log  = Join-Path $logs "$stem.log"
@@ -91,6 +146,7 @@ function Process-Job($jobFile) {
     if ($ensureCode -ne 0) {
         "`n[ensure_unicorn failed: exit $ensureCode]" | Out-File -FilePath $log -Append -Encoding utf8
         Log "  FAILED (UNICORN not ready) -> failed/ (log: $log)"
+        Report-Completion $job $ensureCode $log
         Move-Pair $procJob $job.zip $failed
         return
     }
@@ -107,6 +163,8 @@ function Process-Job($jobFile) {
     $ErrorActionPreference = $prevEAP
     $out | Out-File -FilePath $log -Append -Encoding utf8
     "`n[exit $code]" | Out-File -FilePath $log -Append -Encoding utf8
+
+    Report-Completion $job $code $log
 
     if ($code -eq 0) {
         Log "  OK -> done/ (log: $log)"

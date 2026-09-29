@@ -41,7 +41,7 @@ def sync_columns(reader: BenchlingReader, column_ids: List[str], trigger: dict) 
                 outcome.result = "Skipped"
                 outcome.message = f"Column Status is {ct.status} - not sent to UNICORN"
             else:
-                outcome.job_ref = queue_import_job(ct, outcome.content_hash)
+                outcome.job_ref = queue_import_job(ct, outcome.content_hash, trigger.get("canvas_id"))
                 outcome.result = "Queued"
                 outcome.message = "Queued for UNICORN (import if new, update if it exists)"
         except SyncError as e:

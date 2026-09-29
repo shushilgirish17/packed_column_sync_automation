@@ -47,6 +47,12 @@ function Get-ProjectConfig {
         UnicornUser       = Resolve-Val 'UNICORN_USER'   ''
         UnicornModule     = Resolve-Val 'UNICORN_MODULE' 'Evaluation'
         WinAppDriverExe   = Resolve-Val 'WINAPPDRIVER_EXE' ''
+        # AWS identity already used by sqs_pull.py, reused here to report completion back to
+        # the Benchling canvas that queued a job. LambdaFunctionName empty = reporting skipped
+        # (e.g. local/demo jobs with no canvasId, or before this is set up).
+        AwsProfile        = Resolve-Val 'AWS_PROFILE' ''
+        AwsRegion         = Resolve-Val 'AWS_REGION'  'us-east-2'
+        LambdaFunctionName = Resolve-Val 'LAMBDA_FUNCTION_NAME' ''
     }
 }
 
