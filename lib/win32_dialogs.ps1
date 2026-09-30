@@ -78,6 +78,102 @@ public class W32Dlg{
 }
 "@
 
+Add-Type @"
+using System;using System.Runtime.InteropServices;
+public class W32Focus{
+  public struct POINT{public int X;public int Y;}
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int cmd);
+  [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h,uint f);
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
+  [DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(IntPtr h,out int pid);
+  [DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(IntPtr h,IntPtr pid);
+  [DllImport("kernel32.dll")] public static extern int GetCurrentThreadId();
+  [DllImport("user32.dll")] public static extern bool AttachThreadInput(int a,int b,bool attach);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte vk,byte scan,uint f,UIntPtr e);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
+  [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint f,int dx,int dy,uint d,UIntPtr e);
+  public static int PidOf(IntPtr h){ int p; GetWindowThreadProcessId(h,out p); return p; }
+  public static IntPtr Root(IntPtr h){ return GetAncestor(h,2); }
+  public static IntPtr At(int x,int y){ var p=new POINT(); p.X=x; p.Y=y; return WindowFromPoint(p); }
+}
+"@
+
+function Set-UnicornForeground {
+    <#
+      Bring a UNICORN window to the foreground and CONFIRM it got there.
+
+      A bare SetForegroundWindow is refused by Windows' foreground lock whenever
+      the caller is not the foreground process - which is always the case for
+      watch_service's child scripts. It fails silently, and a synthetic click
+      then lands on whatever app is covering UNICORN (seen: the button centre was
+      under another window, the click went there, Column Handling never opened).
+      Escalate: plain call -> AttachThreadInput to the current foreground thread
+      -> an ALT tap (makes this process the last-input owner, which lifts the
+      lock). Never minimizes (that closes UNICORN's modal dialogs).
+      Returns $true only if the window is verifiably in front.
+    #>
+    param([Parameter(Mandatory)][IntPtr]$Window, [int]$Attempts = 3)
+    if ([W32Focus]::IsIconic($Window)) { [void][W32Focus]::ShowWindow($Window, 9) }   # SW_RESTORE
+    $isFront = { [W32Focus]::Root([W32Focus]::GetForegroundWindow()) -eq [W32Focus]::Root($Window) }
+    for ($i = 1; $i -le $Attempts; $i++) {
+        [void][W32Focus]::SetForegroundWindow($Window); Start-Sleep -Milliseconds 150
+        if (& $isFront) { return $true }
+
+        $fgThread = [W32Focus]::GetWindowThreadProcessId([W32Focus]::GetForegroundWindow(), [IntPtr]::Zero)
+        $me = [W32Focus]::GetCurrentThreadId()
+        if ($fgThread -and $fgThread -ne $me -and [W32Focus]::AttachThreadInput($me, $fgThread, $true)) {
+            try {
+                [void][W32Focus]::BringWindowToTop($Window)
+                [void][W32Focus]::SetForegroundWindow($Window)
+            } finally { [void][W32Focus]::AttachThreadInput($me, $fgThread, $false) }
+            Start-Sleep -Milliseconds 150
+            if (& $isFront) { return $true }
+        }
+
+        [W32Focus]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)          # ALT down
+        [W32Focus]::keybd_event(0x12, 0, 0x0002, [UIntPtr]::Zero)     # ALT up
+        [void][W32Focus]::SetForegroundWindow($Window)
+        Start-Sleep -Milliseconds 250
+        if (& $isFront) { return $true }
+    }
+    return $false
+}
+
+function Invoke-UnicornMouseClick {
+    <#
+      Synthetic click at the centre of an element's screen rect (works at
+      negative coords / owner-drawn buttons, unlike WinAppDriver's click).
+      Foregrounds $Window first and then checks that the pixel under the target
+      really belongs to UNICORN - if another window still covers it, it does NOT
+      click (clicking blind into another app is how jobs failed before, and is
+      unsafe). Restores the cursor. Returns $true if the click was delivered.
+    #>
+    param([Parameter(Mandatory)][IntPtr]$Window, [Parameter(Mandatory)]$Rect)
+    $cx = [int]($Rect.X + $Rect.Width / 2); $cy = [int]($Rect.Y + $Rect.Height / 2)
+    $pid_ = [W32Focus]::PidOf($Window)
+    if (-not (Set-UnicornForeground -Window $Window)) {
+        Write-Host "    ! could not bring '$([W32Dlg]::Text($Window))' to the foreground - click skipped"
+        return $false
+    }
+    Start-Sleep -Milliseconds 250
+    $hit = [W32Focus]::Root([W32Focus]::At($cx, $cy))
+    if ([W32Focus]::PidOf($hit) -ne $pid_) {
+        Write-Host "    ! target ($cx,$cy) is covered by '$([W32Dlg]::Text($hit))' (pid $([W32Focus]::PidOf($hit))) - click skipped"
+        return $false
+    }
+    $o = New-Object W32Focus+POINT; [void][W32Focus]::GetCursorPos([ref]$o)
+    [void][W32Focus]::SetCursorPos($cx, $cy); Start-Sleep -Milliseconds 120
+    [W32Focus]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 60
+    [W32Focus]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 200
+    [void][W32Focus]::SetCursorPos($o.X, $o.Y)
+    return $true
+}
+
 $script:BM_CLICK         = 0x00F5
 $script:WM_COMMAND       = 0x0111
 $script:BN_CLICKED       = 0

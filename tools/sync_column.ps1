@@ -97,13 +97,9 @@ function Wad($method, $path, $body) {
 function MouseClick($hwnd, $rect) {
     # Synthetic click at an element's screen rect - works at negative
     # coordinates and on owner-drawn buttons, unlike WinAppDriver's click.
-    $cx = [int]($rect.X + $rect.Width / 2); $cy = [int]($rect.Y + $rect.Height / 2)
-    $o = New-Object Nav+POINT; [void][Nav]::GetCursorPos([ref]$o)
-    [void][Nav]::SetForegroundWindow($hwnd); Start-Sleep -Milliseconds 350
-    [void][Nav]::SetCursorPos($cx, $cy); Start-Sleep -Milliseconds 120
-    [Nav]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 60
-    [Nav]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 200
-    [void][Nav]::SetCursorPos($o.X, $o.Y)
+    # Foregrounds UNICORN and refuses to click if another window still covers
+    # the target (the caller's wait-for-dialog then fails/retries cleanly).
+    [void](Invoke-UnicornMouseClick -Window $hwnd -Rect $rect)
 }
 
 function Find-Button($dlg, $autoId) {
@@ -265,7 +261,13 @@ else {
     # Open dialog actually closes.
     $accepted = $false
     for ($attempt = 1; $attempt -le 3 -and -not $accepted; $attempt++) {
-        [void][Nav]::SetForegroundWindow($fd); Start-Sleep -Milliseconds 700
+        # SendKeys goes to whatever has focus - never type the path unless the
+        # Open dialog is verifiably in front.
+        if (-not (Set-UnicornForeground -Window $fd)) {
+            Info "  could not bring the Open dialog to the foreground (attempt $attempt/3)"
+            Start-Sleep -Milliseconds 700; continue
+        }
+        Start-Sleep -Milliseconds 700
         [System.Windows.Forms.SendKeys]::SendWait('^a'); Start-Sleep -Milliseconds 150
         [System.Windows.Forms.SendKeys]::SendWait($zip); Start-Sleep -Milliseconds 250
         [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
@@ -381,8 +383,10 @@ else { Write-Host "RESULT: SYNC FAILED (read-back mismatch)" -ForegroundColor Re
         if ($stray -eq [IntPtr]::Zero) { $stray = [Nav]::FindEq($u.Id, $strayTitle) }
         if ($stray -ne [IntPtr]::Zero) {
             Write-Host "    (cleanup) closing stray '$strayTitle' dialog" -ForegroundColor Yellow
-            [void][Nav]::SetForegroundWindow($stray); Start-Sleep -Milliseconds 500
-            [System.Windows.Forms.SendKeys]::SendWait('{ESC}'); Start-Sleep -Milliseconds 800
+            if (Set-UnicornForeground -Window $stray) {
+                Start-Sleep -Milliseconds 500
+                [System.Windows.Forms.SendKeys]::SendWait('{ESC}'); Start-Sleep -Milliseconds 800
+            } else { Write-Host "    (cleanup) could not foreground '$strayTitle' - close it manually" -ForegroundColor Yellow }
         }
     }
     # Also dismiss any message box (e.g. an "Import was successful" / error box)

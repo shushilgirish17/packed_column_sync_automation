@@ -97,7 +97,12 @@ def _patch_column_block(markdown: str, anchor: str, new_block: str) -> str:
     markdown, matched by the anchor already bolded at the start of its line, or append it if
     this column has no chunk yet. Used by report_column_result to update a single column without
     disturbing the others - the canvas's own current markdown IS the persisted state."""
-    pattern = re.compile(rf"^-.*\*\*{re.escape(anchor)}\b.*?(?=\n-\s|\Z)", re.DOTALL | re.MULTILINE)
+    # The bullet-start search (^-[^\n]*) is deliberately confined to a single line - an earlier
+    # DOTALL '.*' here let the match start at a DIFFERENT, earlier column's bullet and swallow
+    # everything up to this column's anchor, silently deleting that other column's line entirely
+    # (confirmed live: patching the 2nd of 2 queued columns erased the 1st). Only the *tail* (the
+    # indented sub-lines after the matched bullet) needs DOTALL, to span multiple lines.
+    pattern = re.compile(rf"^-[^\n]*\*\*{re.escape(anchor)}\b.*?(?=\n-\s|\Z)", re.DOTALL | re.MULTILINE)
     if pattern.search(markdown):
         patched = pattern.sub(lambda _m: new_block, markdown, count=1)
     elif not markdown or markdown.strip() in ("", _NO_RESULTS_YET, "**No Packed Columns found to sync.**"):

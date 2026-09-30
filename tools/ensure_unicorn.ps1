@@ -32,6 +32,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $root 'lib\env.ps1')
+. (Join-Path $root 'lib\win32_dialogs.ps1')
 $cfg = Get-ProjectConfig
 
 Add-Type -AssemblyName UIAutomationClient
@@ -66,13 +67,8 @@ function Log($m) { Write-Host ("{0}  {1}" -f (Get-Date -Format 'HH:mm:ss'), $m) 
 function CtOf($el) { return ($el.Current.ControlType.ProgrammaticName -replace '^ControlType\.','') }
 
 function MouseClick($hwnd, $rect) {
-    $cx = [int]($rect.X + $rect.Width / 2); $cy = [int]($rect.Y + $rect.Height / 2)
-    $o = New-Object Boot+POINT; [void][Boot]::GetCursorPos([ref]$o)
-    [void][Boot]::SetForegroundWindow($hwnd); Start-Sleep -Milliseconds 400
-    [void][Boot]::SetCursorPos($cx, $cy); Start-Sleep -Milliseconds 150
-    [Boot]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 60
-    [Boot]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 200
-    [void][Boot]::SetCursorPos($o.X, $o.Y)
+    # Foregrounds + verifies the target pixel is UNICORN's before clicking.
+    return (Invoke-UnicornMouseClick -Window $hwnd -Rect $rect)
 }
 
 function Get-Unicorn { Get-Process $cfg.UnicornProcess -ErrorAction SilentlyContinue }
@@ -81,30 +77,38 @@ function ColumnHandling-Open {
     return ([Boot]::FindEqAnyPid($cfg.ColumnDialogTitle) -ne [IntPtr]::Zero)
 }
 
-function Open-ColumnHandling {
+function Open-ColumnHandling([int]$Attempts = 3) {
     # Click the 'Column Handling' button in any visible UNICORN module window.
-    $u = Get-Unicorn
-    if (-not $u) { return $false }
-    foreach ($h in [Boot]::Visible($u.Id)) {
-        $win = $AE::FromHandle($h)
-        foreach ($e in $win.FindAll($TS::Descendants, $COND::TrueCondition)) {
-            if ((CtOf $e) -eq 'Button' -and $e.Current.Name -eq $cfg.ColumnDialogTitle -and $e.Current.IsEnabled) {
-                Log "clicking '$($cfg.ColumnDialogTitle)' button in '$([Boot]::Text($h))'"
-                MouseClick $h $e.Current.BoundingRectangle
-                for ($i = 0; $i -lt 20; $i++) { Start-Sleep -Milliseconds 500; if (ColumnHandling-Open) { return $true } }
+    # Retried: the click is refused (not sent blind) when UNICORN can't be
+    # brought in front of whatever window is covering it.
+    for ($a = 1; $a -le $Attempts; $a++) {
+        $u = Get-Unicorn
+        if (-not $u) { return $false }
+        $found = $false
+        foreach ($h in [Boot]::Visible($u.Id)) {
+            $win = $AE::FromHandle($h)
+            foreach ($e in $win.FindAll($TS::Descendants, $COND::TrueCondition)) {
+                if ((CtOf $e) -eq 'Button' -and $e.Current.Name -eq $cfg.ColumnDialogTitle -and $e.Current.IsEnabled) {
+                    $found = $true
+                    Log "clicking '$($cfg.ColumnDialogTitle)' button in '$([Boot]::Text($h))' (attempt $a/$Attempts)"
+                    if (-not (MouseClick $h $e.Current.BoundingRectangle)) { continue }
+                    for ($i = 0; $i -lt 20; $i++) { Start-Sleep -Milliseconds 500; if (ColumnHandling-Open) { return $true } }
+                }
             }
         }
+        if (-not $found) {
+            # No specific 'Button' in the tree usually means the UIA provider has
+            # degraded to generic Panes - only a UNICORN restart fixes that.
+            Log "  no enabled '$($cfg.ColumnDialogTitle)' button found in any UNICORN window (UIA provider degraded? run tools\canary.ps1 / restart UNICORN)"
+        }
+        if (ColumnHandling-Open) { return $true }
+        Start-Sleep -Seconds 1
     }
     return (ColumnHandling-Open)
 }
 
 function ClickXY($hwnd, $x, $y) {
-    $o = New-Object Boot+POINT; [void][Boot]::GetCursorPos([ref]$o)
-    [void][Boot]::SetForegroundWindow($hwnd); Start-Sleep -Milliseconds 300
-    [void][Boot]::SetCursorPos([int]$x, [int]$y); Start-Sleep -Milliseconds 120
-    [Boot]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 60
-    [Boot]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 150
-    [void][Boot]::SetCursorPos($o.X, $o.Y)
+    return (Invoke-UnicornMouseClick -Window $hwnd -Rect ([pscustomobject]@{ X = $x; Y = $y; Width = 0; Height = 0 }))
 }
 
 function Escape-SendKeys([string]$s) {
@@ -154,13 +158,18 @@ function Do-Login {
         $cr = $cboUser.Current.BoundingRectangle; [int]($cr.X + $cr.Width / 2)
     } else { [int]($lr.X + $lr.Width + 120) }
 
-    [void][Boot]::SetForegroundWindow($h); Start-Sleep -Milliseconds 500
-    ClickXY $h $px $py
+    # The password goes out via SendKeys to whatever has focus - so refuse to
+    # type it unless the Login dialog is verifiably in front and got the click.
+    if (-not (ClickXY $h $px $py) -or -not (Set-UnicornForeground -Window $h)) {
+        $pw = $null
+        Log "  Login dialog could not be brought to the foreground - not typing the password"
+        return $false
+    }
     [System.Windows.Forms.SendKeys]::SendWait((Escape-SendKeys $pw))   # never logged
     $pw = $null
     Start-Sleep -Milliseconds 300
     Log "  password entered; clicking LOG IN"
-    MouseClick $h $btnOK.Current.BoundingRectangle
+    if (-not (MouseClick $h $btnOK.Current.BoundingRectangle)) { Log "  could not click LOG IN"; return $false }
     Start-Sleep -Seconds 2
     # Authentication + module load takes a while; readiness is decided by the
     # module-window wait in the caller, not here. Returning true just means the
