@@ -32,6 +32,7 @@ param(
     [Parameter(Mandatory)][string]$ColumnName,
     [string]$Set,          # "label=value;label=value" — fields to update
     [string]$ImportZip,
+    [string]$PressureUnit, # unit of the pressure values in -Set (bar / MPa); Edit refuses a mismatch
     [string]$Base
 )
 
@@ -215,6 +216,18 @@ if ($exists) {
     if ($Changes.Count -eq 0) { Step "Update"; Info "column exists and no -Set supplied -> nothing to change"; }
     else {
         Step "Update - Edit the column type"
+        # Edit only writes numbers - the field keeps the Column Type's existing unit. Writing bar
+        # values into an MPa field would make a pressure limit 10x too high, so stop instead.
+        if ($PressureUnit) {
+            $current = Read-Grids $dlg
+            foreach ($lbl in @('Max pre-column pressure', 'Max delta column pressure')) {
+                if (-not $Changes.ContainsKey($lbl) -or -not $current.ContainsKey($lbl)) { continue }
+                $have = "$($current[$lbl].Unit)".Trim()
+                if ($have -and $have -ne $PressureUnit) {
+                    Die 1 "'$lbl' is in $have in UNICORN but Benchling now sends $PressureUnit - change the unit in UNICORN (or re-import) before re-syncing."
+                }
+            }
+        }
         MouseClick $dlgH (Find-Button $dlg 'btnEditType').Current.BoundingRectangle
         $eh = [IntPtr]::Zero
         for ($i = 0; $i -lt 30 -and $eh -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 500; $eh = [Nav]::FindPre($u.Id, 'Edit Column type') }

@@ -6,3 +6,5 @@ build/
 *.zip
 .env
 dist/
+infra/packaged.yaml
+benchling-secret.json

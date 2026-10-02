@@ -63,6 +63,7 @@ def build_column_type_xml(ct: ColumnType, scope: str = None) -> bytes:
              f"<LastModifiedUtcOffsetMinutes>{offset}</LastModifiedUtcOffsetMinutes>"
              f"<LastModifiedBy>{who}</LastModifiedBy>")
     technique = f"<TechniqueName>{escape(u['technique_xml'])}</TechniqueName>" if u.get("technique_xml") else ""
+    pressure_unit = escape(u.get("pressure_unit") or "MPa")
     return (
         '<ColumnTypes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
         f'FormatVersion="2" UNICORNVersion="{escape(config.UNICORN_VERSION)}">'
@@ -71,13 +72,13 @@ def build_column_type_xml(ct: ColumnType, scope: str = None) -> bytes:
         f"<AccessScopeName>{escape(scope or config.IMPORT_ACCESS_SCOPE)}</AccessScopeName>"
         f"<BedHeightUnit>cm</BedHeightUnit>{_num('BedHeight', u['bed_height'])}"
         "<ColumnVolumeUnitName>ml</ColumnVolumeUnitName>"
-        f"<DeltaColumnPressureUnit>MPa</DeltaColumnPressureUnit>{_num('DeltaColumnPressure', u['delta_pressure'])}"
+        f"<DeltaColumnPressureUnit>{pressure_unit}</DeltaColumnPressureUnit>{_num('DeltaColumnPressure', u['delta_pressure'])}"
         "<ColumnFlowrateUnit>ml_per_min</ColumnFlowrateUnit>"
         f"{_num('DefaultFlowrate', u['default_flow'])}{_num('MaxFlowrate', u['max_flow'])}"
         "<TypicalWidthAtBaseUnit>ml</TypicalWidthAtBaseUnit>"
         "<Hardware><Name>Any</Name>"
         f"<DiameterUnit>cm</DiameterUnit>{_num('Diameter', u['diameter'])}"
-        f"<PreColumnPressureUnit>MPa</PreColumnPressureUnit>{_num('PreColumnPressure', u['pre_pressure'])}"
+        f"<PreColumnPressureUnit>{pressure_unit}</PreColumnPressureUnit>{_num('PreColumnPressure', u['pre_pressure'])}"
         f"<IsPredefined>false</IsPredefined>{stamp}</Hardware>"
         f"<Media><Name>Any</Name>{technique}"
         "<AverageParticleDiameterUnit>um</AverageParticleDiameterUnit>"
@@ -115,6 +116,9 @@ def queue_import_job(ct: ColumnType, digest: str, canvas_id: str = None) -> str:
     job = {
         "columnName": ct.name,
         "set": edit_set_string(ct),
+        # Unit of the pressure values in "set" - sync_column.ps1 refuses an Edit if the existing
+        # Column Type uses a different unit (it would write bar numbers into an MPa field).
+        "pressureUnit": ct.unicorn.get("pressure_unit"),
         "zip": f"{stem}.zip",
         "source": ident,
         "scope": config.IMPORT_ACCESS_SCOPE,

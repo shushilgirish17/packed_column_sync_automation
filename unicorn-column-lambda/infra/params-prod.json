@@ -1,0 +1,25 @@
+[
+  { "ParameterKey": "EnvName",               "ParameterValue": "prod" },
+  { "ParameterKey": "LogLevel",              "ParameterValue": "INFO" },
+
+  { "ParameterKey": "BenchlingUrl",          "ParameterValue": "https://<lilly-prod-tenant>.benchling.com" },
+  { "ParameterKey": "BenchlingClientId",     "ParameterValue": "<benchling-app-client-id>" },
+  { "ParameterKey": "AppDefinitionId",       "ParameterValue": "<appdef_xxxxxxxx>" },
+  { "ParameterKey": "PackedColumnSchemaId",  "ParameterValue": "<ts_xxxxxxxx>" },
+  { "ParameterKey": "ResinLibrarySchemaId",  "ParameterValue": "<assaysch_xxxxxxxx>" },
+  { "ParameterKey": "ColumnPackingSchemaId", "ParameterValue": "" },
+
+  { "ParameterKey": "ImportAccessScope",     "ParameterValue": "Global" },
+  { "ParameterKey": "ColumnNameTemplate",    "ParameterValue": "{resin}_{d} x {h}cm_{v}mL_{registry_id}" },
+  { "ParameterKey": "MaxLinearFlowFactor",   "ParameterValue": "" },
+
+  { "ParameterKey": "VpcId",                 "ParameterValue": "<vpc-xxxxxxxx>" },
+  { "ParameterKey": "SubnetIds",             "ParameterValue": "<subnet-aaaaaaaa>,<subnet-bbbbbbbb>" },
+
+  { "ParameterKey": "KmsKeyArn",             "ParameterValue": "" },
+  { "ParameterKey": "PermissionsBoundaryArn","ParameterValue": "" },
+
+  { "ParameterKey": "ImportRetentionDays",   "ParameterValue": "365" },
+  { "ParameterKey": "LogRetentionDays",      "ParameterValue": "2557" },
+  { "ParameterKey": "QueueVisibilityTimeoutSec", "ParameterValue": "300" }
+]

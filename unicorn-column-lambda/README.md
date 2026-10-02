@@ -8,11 +8,12 @@ Column Type import archive to S3, and queues one SQS message per column for the 
 ```
 Benchling canvas --webhook--> Lambda --> S3 (<stem>.zip + <stem>.job.json) + SQS (one message per column)
                                                                          --> on-prem consumer --> UNICORN
-                              |  credentials: SSM Parameter Store
+                              |  credentials: Secrets Manager
                               |  audit + errors: CloudWatch Logs
 ```
 
-AWS services: **Lambda, SSM Parameter Store, S3, SQS, CloudWatch Logs**.
+AWS services: **Lambda, Secrets Manager, S3, SQS, CloudWatch Logs** - all created by
+`infra/template.yaml` (see [infra/README.md](infra/README.md)).
 
 ## Layout
 ```
@@ -58,17 +59,20 @@ fields @timestamp, audit.benchling_registry_id, audit.result, audit.message
 | filter ispresent(audit.result) | sort @timestamp desc
 ```
 
-## Build and deploy (console)
+## Build and deploy
 ```bash
 python build.py          # dist/packed-column-sync-layer.zip + dist/packed-column-sync.zip
 python build.py --code   # after a code change: code zip only
 ```
 Layer zip -> Lambda layer (Python 3.14, x86_64). Code zip -> the function. Rebuild the layer only when
-`requirements.txt` changes.
+`requirements.txt` changes. Deploy with CloudFormation: [infra/README.md](infra/README.md).
 
-Environment variables: `BENCHLING_SSM_PARAMETER`, `PACKED_COLUMN_SCHEMA_ID`, `RESIN_LIBRARY_SCHEMA_ID`,
+Environment variables (set by the template): `BENCHLING_SECRET_ID` (Secrets Manager, holds
+`client_secret`) + `BENCHLING_URL` + `BENCHLING_CLIENT_ID`, `PACKED_COLUMN_SCHEMA_ID`, `RESIN_LIBRARY_SCHEMA_ID`,
 `IMPORT_BUCKET`, `SQS_QUEUE_URL`, and for the canvas webhook `APP_DEFINITION_ID`. Optional: `IMPORT_ACCESS_SCOPE`
 (`Personal` default, `Global` for production), `COLUMN_NAME_TEMPLATE`, `TECHNIQUE_MAP`.
+The hand-built Zifo function still uses `BENCHLING_SSM_PARAMETER` (SSM SecureString with all three values);
+the code accepts either.
 
 ## Local run (no AWS)
 ```bash
@@ -83,6 +87,9 @@ python -m tools.run_local bfi_xxxxx        # writes ./out/incoming/<stem>.zip + 
   `GelFiltration`, `ReversedPhase` assumed - confirm with one export each.
 - pH, particle size, ordering info: mapped and sent in `parameters`, not in the XML until their element
   names are seen in an export.
-- Naming convention: `{resin} {d}x{h}cm {v}mL` (`COLUMN_NAME_TEMPLATE`). A name change creates a new column type rather than updating the existing one, since the name is the dedup key.
-- Max linear flow: empty by default (`MAX_LINEAR_FLOW_FACTOR=0.75` enables the sheet's interim rule).
+- Naming convention: `{resin}_{d} x {h}cm_{v}mL_{registry_id}`, e.g. `Poros 50 HS_1.0 x 20.3cm_17.708mL_COL001` (`COLUMN_NAME_TEMPLATE`). A name change creates a new column type rather than updating the existing one, since the name is the dedup key.
+- Max linear flow: from the column's `Max Linear Flow Rate (cm/h)`; if empty, written empty (`MAX_LINEAR_FLOW_FACTOR=0.75` enables the sheet's interim rule).
+- Pressure: `Max Pre-Column Pressure` is used as entered, in the column's `Pressure Unit` (bar or MPa); the resin library
+  `max_pressure_bar` becomes Max delta column pressure (kept for bar, / 10 for MPa). UNICORN's XML token for bar is
+  assumed `bar` - confirm with one export of a bar column type.
 - Lilly tenant IP allowlist: the Lambda needs a VPC + NAT with an allowlisted IP there.

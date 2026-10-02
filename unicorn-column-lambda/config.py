@@ -23,8 +23,14 @@ def _env_json(name, default):
 # ---------------------------------------------------------------------------
 # Benchling
 # ---------------------------------------------------------------------------
-# SSM Parameter Store SecureString holding {"url", "client_id", "client_secret"}.
-# Unset -> BENCHLING_URL / BENCHLING_CLIENT_ID / BENCHLING_CLIENT_SECRET env vars (local runs).
+# Credentials, first match wins:
+#   BENCHLING_SECRET_ID      Secrets Manager secret (CloudFormation deployments). Holds at least
+#                            {"client_secret"}; url/client_id may come from BENCHLING_URL /
+#                            BENCHLING_CLIENT_ID env vars instead, so only the secret is secret.
+#   BENCHLING_SSM_PARAMETER  SSM SecureString holding {"url", "client_id", "client_secret"}
+#                            (the hand-built Zifo function).
+#   neither                  BENCHLING_URL / BENCHLING_CLIENT_ID / BENCHLING_CLIENT_SECRET (local runs).
+BENCHLING_SECRET_ID = _env("BENCHLING_SECRET_ID")
 BENCHLING_SSM_PARAMETER = _env("BENCHLING_SSM_PARAMETER")
 APP_DEFINITION_ID = _env("APP_DEFINITION_ID")              
 SKIP_WEBHOOK_VERIFICATION = _env_bool("SKIP_WEBHOOK_VERIFICATION", False)
@@ -46,8 +52,14 @@ FIELDS = {
     # Packed Column entity (+ optional Column Packing result)
     "diameter": ["Column Diameter (cm)", "column_diameter_cm"],
     "bed_height": ["Packed Bed Height (cm)", "packed_bed_height_cm"],
-    "volume": ["Packed Volume (mL)", "Calculated Volume (mL)", "calculated_volume_ml"],
-    "linear_flow": ["Column Operation Flow Rate (cm/h)", "column_operation_flow_rate_cmh"],
+    # Calculated Volume = Column Packing result value, surfaced on the Packed Column as a computed field.
+    "volume": ["Calculated Volume (mL)", "calculated_volume_ml", "Packed Volume (mL)"],
+    "linear_flow": ["Default Linear Flow Rate (cm/h)", "default_linear_flow_rate_cmh",
+                    "Column Operation Flow Rate (cm/h)", "column_operation_flow_rate_cmh"],
+    "max_linear_flow": ["Max Linear Flow Rate (cm/h)", "max_linear_flow_rate_cmh"],
+    # Max pre-column pressure is entered in the unit picked in "Pressure Unit" (bar or MPa).
+    "max_pre_pressure": ["Max Pre-Column Pressure", "max_pre_column_pressure"],
+    "pressure_unit": ["Pressure Unit", "pressure_unit"],
     "status": ["Column Status", "column_status"],
     "resin_link": ["Resin Lot", "Packed Column Resin Type", "Resin Type", "Resin Catalog", "resin_catalog"],
     "resin_type_text": ["Resin Type", "Packed Column Resin Type"],
@@ -60,9 +72,9 @@ FIELDS = {
     "lib_resin_link": ["resin_catalog", "Resin Catalog"],
     "lib_technique": ["technique", "Technique", "unicorn_technique"],
     "lib_max_pressure_bar": ["max_pressure_bar", "Max Pressure (bar)"],
-    "lib_suggested_flow": ["suggested_flow_rate_cmhr", "Suggested Flow Rate (cm/hr)"],
+    "lib_suggested_flow": ["suggested_flow_rate_cmhr", "suggested_flow_ratecmhr", "Suggested Flow Rate (cm/hr)"],
     "lib_ph_range": ["stable_ph_range", "Stable pH Range"],
-    "lib_particle_size": ["mean_particle_size_um", "Mean Particle Size (um)"],
+    "lib_particle_size": ["mean_particle_size_um", "mean_particle_sizeum", "Mean Particle Size (um)"],
     # SAP Raw Material entity (target of the resin link)
     "material_name": ["Raw Material Name", "raw_material_name", "Name"],
     "material_item_code": ["Item Code", "item_code", "Catalog #"],
@@ -103,10 +115,19 @@ MAX_LINEAR_FLOW_FACTOR = float(_env("MAX_LINEAR_FLOW_FACTOR")) if _env("MAX_LINE
 # Placeholders are never sent as Edit values for an existing column type.
 REQUIRED_PLACEHOLDER = float(_env("REQUIRED_PLACEHOLDER", "0"))
 
+# Pressure Unit dropdown (matched case-insensitively) -> UNICORN ColumnType.xml unit token.
+# MPa is CONFIRMED from real exports; "bar" is UNCONFIRMED - export one bar column type from
+# UNICORN to check the token. Benchling library pressures are always in bar.
+PRESSURE_UNIT_XML = {"bar": "bar", "mpa": "MPa"}
+CONFIRMED_PRESSURE_UNIT_XML = {"MPa"}
+DEFAULT_PRESSURE_UNIT = "mpa"  # used (with a warning) when Pressure Unit is empty
+
 # UNICORN Column Type name - this is the <Name> shown in the Column Handling library, so it's
 # also the dedup key (same name -> Edit path, new name -> Import path). Fields: {name} Benchling
-# name, {registry_id}, {resin}, {d} diameter, {h} bed height, {v} volume (1 dp).
-COLUMN_NAME_TEMPLATE = _env("COLUMN_NAME_TEMPLATE", "{resin} {d}x{h}cm {v}mL")
+# name, {registry_id}, {resin}, {d} diameter, {h} bed height, {v} volume (as entered, up to
+# 3 dp, always one decimal: 1 -> 1.0, 17.708 -> 17.708).
+# Default e.g. 'Poros 50 HS_1.0 x 20.3cm_17.708mL_COL001'.
+COLUMN_NAME_TEMPLATE = _env("COLUMN_NAME_TEMPLATE", "{resin}_{d} x {h}cm_{v}mL_{registry_id}")
 
 # Personal = visible only to the importing account (testing); Global = everyone (production).
 IMPORT_ACCESS_SCOPE = _env("IMPORT_ACCESS_SCOPE", "Personal")
