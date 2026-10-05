@@ -39,11 +39,18 @@ def parse_ph_range(raw) -> Tuple[float, float]:
     return low, high
 
 
+_CODE_IN_PARENS = re.compile(r"\(([A-Za-z]+)\)\s*$")
+
+
 def map_technique(raw) -> Tuple[str, str]:
-    """-> (display code, UNICORN XML TechniqueName)."""
+    """-> (display code, UNICORN XML TechniqueName). Accepts the Benchling 'UNICORN Technique'
+    dropdown options, e.g. 'Anion Exchange Chromatography (AIEX)' - matched by the code in
+    brackets first - as well as free text like 'cation' or 'Protein A'."""
     text = str(raw).strip().lower()
+    paren = _CODE_IN_PARENS.search(text)
+    candidates = (text, paren.group(1)) if paren else (text,)
     for code, xml in config.TECHNIQUE_MAP.values():
-        if text in (code.lower(), xml.lower()):
+        if any(c in (code.lower(), xml.lower()) for c in candidates):
             return code, xml
     # longest key first so 'reversed phase' beats short keys like 'hic'
     for key in sorted(config.TECHNIQUE_MAP, key=len, reverse=True):
@@ -93,7 +100,9 @@ def map_column(src: ColumnSource) -> ColumnType:
     technique_raw = lib.display(f["lib_technique"])
     technique, technique_xml = map_technique(technique_raw) if technique_raw else (None, None)
     if technique is None:
-        warnings.append("Technique empty on Resin Characteristics Library row")
+        technique = technique_xml = config.DEFAULT_TECHNIQUE_XML
+        warnings.append("Technique empty on Resin Characteristics Library row"
+                        + (f" - written as '{technique_xml}'" if technique_xml else ""))
     elif technique_xml not in config.CONFIRMED_TECHNIQUE_XML:
         warnings.append(f"TechniqueName '{technique_xml}' not yet confirmed against a UNICORN export")
 
@@ -142,7 +151,9 @@ def map_column(src: ColumnSource) -> ColumnType:
     if linear_flow is None:
         warnings.append("No default linear flow rate on column or resin library")
 
-    default_flow = _round(linear_flow * area / 60.0) if linear_flow is not None else None
+    # 4 dp, not 2: UNICORN stores only the volumetric flow and derives the linear flow from it, so
+    # 98.17 ml/min came back as 299.99 cm/h; 98.1748 comes back as the 300 entered in Benchling.
+    default_flow = _round(linear_flow * area / 60.0, 4) if linear_flow is not None else None
     max_linear = None
     max_linear_raw = src.fields.value(f["max_linear_flow"])
     if max_linear_raw is not None:
@@ -152,7 +163,7 @@ def map_column(src: ColumnSource) -> ColumnType:
     elif config.MAX_LINEAR_FLOW_FACTOR is not None and linear_flow is not None:
         max_linear = _round(linear_flow * config.MAX_LINEAR_FLOW_FACTOR)
         warnings.append(f"Max linear flow is interim rule {config.MAX_LINEAR_FLOW_FACTOR} x default linear flow")
-    max_flow = _round(max_linear * area / 60.0) if max_linear is not None else None
+    max_flow = _round(max_linear * area / 60.0, 4) if max_linear is not None else None
 
     # --- pH: single Benchling range reused for short and long term -------------
     ph_low = ph_high = None
@@ -176,8 +187,11 @@ def map_column(src: ColumnSource) -> ColumnType:
     hardware_name = src.hardware.name if src.hardware else src.fields.display(f["hardware_link"])
     hardware_code = src.hardware.fields.display(f["hardware_catalog"]) if src.hardware else None
 
-    resin_label = resin_name or src.fields.display(f["resin_type_text"])
-    name = build_column_type_name(src.name, diameter, bed_height, volume, src.registry_id, resin_label)
+    resin_type = src.fields.display(f["resin_type_text"])
+    resin_label = resin_name or resin_type
+    # Name uses the column's own Resin Type (e.g. 'POROS XQ'), not the resin lot/material name.
+    name = build_column_type_name(src.name, diameter, bed_height, volume, src.registry_id,
+                                  resin_type or resin_label)
     status = str(src.fields.display(f["status"]))
 
     # Values that go into ColumnType.xml. UNICORN derives column volume and linear flows
@@ -192,6 +206,8 @@ def map_column(src: ColumnSource) -> ColumnType:
 
     unicorn = {
         "technique_xml": technique_xml,
+        # Display text for editing an existing Column Type - only for a technique set in Benchling.
+        "technique_display": config.TECHNIQUE_DISPLAY.get(technique_xml) if technique_raw else None,
         "diameter": diameter,
         "bed_height": bed_height,
         "default_flow": required("Default flow rate", default_flow),

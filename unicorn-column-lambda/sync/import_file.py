@@ -53,8 +53,10 @@ def _num(tag, value):
 
 
 def build_column_type_xml(ct: ColumnType, scope: str = None) -> bytes:
-    """ColumnType.xml, element order as in UNICORN 7.10 exports. Only elements confirmed from
-    real exports are emitted; pH, ordering info and particle size have no confirmed tag yet."""
+    """ColumnType.xml, element order as in UNICORN 7.10 exports. Only the fields Column Handling
+    requires are emitted. pH and particle size are optional in UNICORN and deliberately left out
+    (their tags - MinpHShortTerm.., AverageParticleDiameter inside <Media> - are known from a real
+    export if that ever changes)."""
     u = ct.unicorn
     now, offset = _local_now()
     who = escape(config.UNICORN_CREATED_BY)
@@ -89,10 +91,14 @@ def build_column_type_xml(ct: ColumnType, scope: str = None) -> bytes:
 
 def edit_set_string(ct: ColumnType) -> str:
     """'label=value;...' for sync_column.ps1 -Set. Placeholders are excluded so an Edit never
-    overwrites a value an operator entered in UNICORN with 0."""
+    overwrites a value an operator entered in UNICORN with 0. Technique is sent as UNICORN's
+    display text, and only when it came from Benchling (a defaulted 'Any' never overwrites)."""
     skip = set(ct.unicorn.get("placeholders", []))
-    return ";".join(f"{label}={ct.unicorn[key]:g}" for label, key in _EDITABLE
-                    if label not in skip and isinstance(ct.unicorn.get(key), (int, float)))
+    pairs = [f"{label}={ct.unicorn[key]:g}" for label, key in _EDITABLE
+             if label not in skip and isinstance(ct.unicorn.get(key), (int, float))]
+    if ct.unicorn.get("technique_display"):
+        pairs.append(f"Technique={ct.unicorn['technique_display']}")
+    return ";".join(pairs)
 
 
 def _safe(text: str) -> str:

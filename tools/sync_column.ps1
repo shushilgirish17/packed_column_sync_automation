@@ -119,7 +119,7 @@ function Read-Grids($dlg) {
             if ($row.Current.Name -eq 'Top Row') { continue }
             $cells = @()
             foreach ($c in $row.FindAll($TS::Children, $COND::TrueCondition)) {
-                if ((CtOf $c) -ne 'DataItem') { continue }
+                if ((CtOf $c) -notin @('DataItem', 'ComboBox')) { continue }
                 $v = ''
                 foreach ($p in $c.GetSupportedPatterns()) {
                     if ($p.ProgrammaticName -like 'Value*') { $v = $c.GetCurrentPattern($VP).Current.Value; if ($v -eq '(null)') { $v = '' } }
@@ -157,17 +157,14 @@ if ($sw.ElapsedMilliseconds -gt 5000 -or $typed -eq 0) {
 }
 Info "healthy - $($u.ProcessName) pid=$($u.Id), $($kids.Count) children in $($sw.ElapsedMilliseconds) ms"
 
-# A message box left open by a previous crashed/interrupted run (e.g. an
-# undismissed "Import was successful" box) sits modal over the main dialog and
-# makes WinAppDriver fail with "unknown error" when it attaches. Clear any such
-# stray box before creating the session so a bad prior run can't poison this one.
-$stray = Find-UnicornMessageBox
-if ($stray -ne [IntPtr]::Zero) {
-    $msg = (@([W32Dlg]::Texts($stray)) | Where-Object { $_ -notmatch '^(OK|Yes|No|Close|Cancel)$' } | Select-Object -First 2) -join ' '
-    Info "clearing stray dialog from a previous run: '$msg'"
-    [void](Close-UnicornMessageBox -Dialog $stray)
-    Start-Sleep -Milliseconds 500
-}
+# Any modal left over Column Handling - a message box from a crashed run, or a
+# 'New Column Type' / 'Edit Column type' / file browser a person left open -
+# blocks every click and makes WinAppDriver fail with "unknown error" when it
+# attaches. Cancel them all (never save) before creating the session.
+try {
+    $cleared = @(Clear-UnicornStrayDialogs -Keep @($cfg.ColumnDialogTitle) -ProcessName $cfg.UnicornProcess)
+    if ($cleared.Count) { Info "closed stray dialog(s) without saving: $($cleared -join ', ')" }
+} catch { Die 2 $_.Exception.Message }
 
 $sess = Wad POST '/session' @{ desiredCapabilities = @{ platformName = 'Windows'; appTopLevelWindow = ('0x{0:x}' -f [int64]$owner) } }
 $sid = $sess.sessionId
@@ -238,15 +235,22 @@ if ($exists) {
             if ((CtOf $g) -ne 'DataGrid') { continue }
             foreach ($row in $g.FindAll($TS::Children, $COND::TrueCondition)) {
                 if ($row.Current.Name -eq 'Top Row') { continue }
-                $cs = @(); foreach ($c in $row.FindAll($TS::Children, $COND::TrueCondition)) { if ((CtOf $c) -eq 'DataItem') { $cs += $c } }
+                # Dropdown values (Technique, Pressure unit, Column volume unit) are ComboBox
+                # cells, not DataItem - skipping them made 'Technique' grab its read-only Unit cell.
+                $cs = @(); foreach ($c in $row.FindAll($TS::Children, $COND::TrueCondition)) { if ((CtOf $c) -in @('DataItem', 'ComboBox')) { $cs += $c } }
                 if ($cs.Count -lt 2) { continue }
                 $lbl = ($cs[0].GetCurrentPattern($VP).Current.Value -replace '^\*', '').Trim()
                 if ($Changes.ContainsKey($lbl)) {
                     # NB: not $vp — PowerShell is case-insensitive and would
                     # clobber the $VP pattern constant.
-                    $valPat = $cs[1].GetCurrentPattern($VP)
-                    if ($valPat.Current.IsReadOnly) { Info "! '$lbl' read-only, skipped" }
-                    else { $valPat.SetValue([string]$Changes[$lbl]); Info "set $lbl = $($Changes[$lbl])" }
+                    # Technique is a dropdown cell: SetValue takes the exact display text
+                    # ('Affinity Chromatography (AC)'). If a cell refuses, say so and carry
+                    # on - the read-back Verify step then reports the mismatch.
+                    try {
+                        $valPat = $cs[1].GetCurrentPattern($VP)
+                        if ($valPat.Current.IsReadOnly) { Info "! '$lbl' read-only, skipped" }
+                        else { $valPat.SetValue([string]$Changes[$lbl]); Info "set $lbl = $($Changes[$lbl])" }
+                    } catch { Info "! could not set '$lbl': $($_.Exception.Message)" }
                 }
             }
         }
@@ -363,8 +367,13 @@ Step "Verify"
 $pass = $true
 if ($exists -and $Changes.Count -gt 0) {
     foreach ($k in $Changes.Keys) {
-        $want = [double]$Changes[$k]; $got = [double]$final[$k].Value
-        $ok = ($got -eq $want); if (-not $ok) { $pass = $false }
+        $want = "$($Changes[$k])".Trim(); $got = "$($final[$k].Value)".Trim()
+        $wn = 0.0; $gn = 0.0
+        if ([double]::TryParse($want, [ref]$wn) -and [double]::TryParse($got, [ref]$gn)) {
+            # UNICORN shows a rounded value (98.1748 sent -> '98.175' shown): allow display rounding.
+            $ok = ([math]::Abs($wn - $gn) -le [math]::Max(0.006, [math]::Abs($wn) * 0.0001))
+        } else { $ok = ($got -eq $want) }   # text, e.g. Technique (case-insensitive)
+        if (-not $ok) { $pass = $false }
         Write-Host ("    {0,-26} want={1,-6} got={2,-6} {3}" -f $k, $want, $got, $(if ($ok) { 'OK' } else { 'MISMATCH' }))
     }
     # derived-field cross-check
@@ -387,28 +396,13 @@ else { Write-Host "RESULT: SYNC FAILED (read-back mismatch)" -ForegroundColor Re
 
 } finally {
     try { Invoke-RestMethod -Method Delete -Uri "$Base/session/$sid" | Out-Null } catch {}
-    # Safety: if we failed mid-Edit, don't leave the modal open (it would
-    # block the main dialog and poison the next run). Esc cancels it,
-    # discarding any partial change. Esc is more reliable here than clicking
-    # the owner-drawn Cancel button.
-    foreach ($strayTitle in @('Edit Column type', 'Import Column Type')) {
-        $stray = [Nav]::FindPre($u.Id, $strayTitle)
-        if ($stray -eq [IntPtr]::Zero) { $stray = [Nav]::FindEq($u.Id, $strayTitle) }
-        if ($stray -ne [IntPtr]::Zero) {
-            Write-Host "    (cleanup) closing stray '$strayTitle' dialog" -ForegroundColor Yellow
-            if (Set-UnicornForeground -Window $stray) {
-                Start-Sleep -Milliseconds 500
-                [System.Windows.Forms.SendKeys]::SendWait('{ESC}'); Start-Sleep -Milliseconds 800
-            } else { Write-Host "    (cleanup) could not foreground '$strayTitle' - close it manually" -ForegroundColor Yellow }
-        }
-    }
-    # Also dismiss any message box (e.g. an "Import was successful" / error box)
-    # so a failure mid-import never leaves a modal blocking the next job.
-    $box = Find-UnicornMessageBox
-    if ($box -ne [IntPtr]::Zero) {
-        Write-Host "    (cleanup) closing stray message box" -ForegroundColor Yellow
-        [void](Close-UnicornMessageBox -Dialog $box)
-    }
+    # Safety: if we failed mid-Edit/Import, don't leave a modal open (it would
+    # block the main dialog and poison the next run). Cancels it, discarding any
+    # partial change - same routine as the pre-flight.
+    try {
+        $cleared = @(Clear-UnicornStrayDialogs -Keep @($cfg.ColumnDialogTitle) -ProcessName $cfg.UnicornProcess)
+        if ($cleared.Count) { Write-Host "    (cleanup) closed stray dialog(s): $($cleared -join ', ')" -ForegroundColor Yellow }
+    } catch { Write-Host "    (cleanup) $($_.Exception.Message)" -ForegroundColor Yellow }
 }
 if ($null -eq $exit) { $exit = 1 }
 exit $exit

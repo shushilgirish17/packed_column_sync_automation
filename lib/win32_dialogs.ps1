@@ -88,6 +88,7 @@ public class W32Focus{
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int cmd);
   [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h,uint f);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h,uint cmd);
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
   [DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(IntPtr h,out int pid);
   [DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(IntPtr h,IntPtr pid);
@@ -172,6 +173,78 @@ function Invoke-UnicornMouseClick {
     [W32Focus]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 200
     [void][W32Focus]::SetCursorPos($o.X, $o.Y)
     return $true
+}
+
+function Get-UnicornStrayDialogs {
+    <#
+      Modal windows left open over UNICORN (e.g. a 'New Column Type' or 'Edit Column type'
+      someone opened, a file browser, a message box). Rule: a visible top-level UNICORN window
+        - whose OWNER is disabled (it is modal and blocking something),
+        - whose title is not in -Keep, and
+        - whose owner chain runs through Column Handling or ends at one of -Modules.
+      The last rule keeps us away from System Control: its prompts belong to a running
+      instrument, and cancelling one could disturb a run. Module windows have no owner and
+      floating tool windows don't disable theirs, so neither is ever touched.
+      Topmost (still enabled) dialogs come first.
+    #>
+    param([string[]]$Keep = @('Column Handling'), [string[]]$Modules = @('Evaluation Classic', 'Evaluation'),
+          [string]$ProcessName = 'UNICORNClient')
+    $p = Get-Process $ProcessName -ErrorAction SilentlyContinue
+    if (-not $p) { return @() }
+    $out = foreach ($h in [W32Dlg]::TopLevel($p.Id)) {
+        $title = [W32Dlg]::Text($h)
+        if ($Keep -contains $title) { continue }
+        $owner = [W32Focus]::GetWindow($h, 4)   # GW_OWNER
+        if ($owner -eq [IntPtr]::Zero -or [W32Dlg]::IsWindowEnabled($owner)) { continue }
+        $chain = @(); $o = $owner
+        while ($o -ne [IntPtr]::Zero -and $chain.Count -lt 10) { $chain += [W32Dlg]::Text($o); $o = [W32Focus]::GetWindow($o, 4) }
+        $inScope = ($chain | Where-Object { $Keep -contains $_ }) -or ($Modules -contains $chain[-1])
+        if (-not $inScope) { continue }
+        [pscustomobject]@{ Handle = $h; Title = $title; Topmost = [W32Dlg]::IsWindowEnabled($h); Owner = $chain[0] }
+    }
+    return @($out | Sort-Object { -not $_.Topmost })
+}
+
+function Clear-UnicornStrayDialogs {
+    <#
+      Close every stray modal (see Get-UnicornStrayDialogs) WITHOUT saving anything, so the
+      automation can always get back to a clean Column Handling dialog. Per dialog, cheapest
+      safe method first:
+        1. a Win32 button No / Cancel / Close / Abort (never OK / Yes / Save). 'No' first so a
+           "Save changes?" prompt discards rather than cancelling the close.
+        2. WM_CLOSE - WinForms treats it as Cancel (UNICORN's owner-drawn dialogs).
+        3. Esc to the foregrounded dialog.
+      Repeats, because closing one dialog can reveal (or trigger) another.
+      Returns the titles it closed; throws if something is still blocking afterwards.
+    #>
+    param([string[]]$Keep = @('Column Handling'), [string]$ProcessName = 'UNICORNClient',
+          [int]$MaxRounds = 8, [switch]$WhatIf)
+    $closed = @()
+    for ($round = 1; $round -le $MaxRounds; $round++) {
+        $strays = @(Get-UnicornStrayDialogs -Keep $Keep -ProcessName $ProcessName)
+        if ($strays.Count -eq 0) { return $closed }
+        if ($WhatIf) { return @($strays.Title) }
+        $d = $strays[0]
+        $res = [IntPtr]::Zero
+        $btn = Get-DialogButtons -Dialog $d.Handle | Where-Object { $_.Enabled -and @('No', 'Cancel', 'Close', 'Abort') -contains $_.Text } |
+               Sort-Object { @('No', 'Cancel', 'Close', 'Abort').IndexOf($_.Text) } | Select-Object -First 1
+        if ($btn) { [void](Invoke-DialogButton -Dialog $d.Handle -Text $btn.Text -TimeoutMs 3000) }
+        if ([W32Dlg]::IsWindow($d.Handle)) {
+            [void][W32Dlg]::SendMessageTimeout($d.Handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero,   # WM_CLOSE
+                                               $script:SMTO_ABORTIFHUNG, 3000, [ref]$res)
+            for ($i = 0; $i -lt 10 -and [W32Dlg]::IsWindow($d.Handle); $i++) { Start-Sleep -Milliseconds 200 }
+        }
+        if ([W32Dlg]::IsWindow($d.Handle) -and (Set-UnicornForeground -Window $d.Handle)) {
+            Add-Type -AssemblyName System.Windows.Forms
+            [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+            for ($i = 0; $i -lt 10 -and [W32Dlg]::IsWindow($d.Handle); $i++) { Start-Sleep -Milliseconds 200 }
+        }
+        if (-not [W32Dlg]::IsWindow($d.Handle)) { $closed += $d.Title }
+        Start-Sleep -Milliseconds 400   # let a follow-up prompt (e.g. "Save changes?") appear
+    }
+    $left = @(Get-UnicornStrayDialogs -Keep $Keep -ProcessName $ProcessName)
+    if ($left.Count) { throw "Could not close UNICORN dialog(s): $(($left.Title) -join ', ') - close manually." }
+    return $closed
 }
 
 $script:BM_CLICK         = 0x00F5

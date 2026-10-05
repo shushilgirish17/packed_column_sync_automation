@@ -70,7 +70,9 @@ FIELDS = {
     "hardware_catalog": ["Catalog #", "Catalog Number", "catalog_number"],
     # Resin Characteristics Library result
     "lib_resin_link": ["resin_catalog", "Resin Catalog"],
-    "lib_technique": ["technique", "Technique", "unicorn_technique"],
+    # packed_column_technique = the "UNICORN Technique" dropdown (Zifo); unicorn_technique = the
+    # older text field with the same display name.
+    "lib_technique": ["packed_column_technique", "unicorn_technique", "technique", "Technique"],
     "lib_max_pressure_bar": ["max_pressure_bar", "Max Pressure (bar)"],
     "lib_suggested_flow": ["suggested_flow_rate_cmhr", "suggested_flow_ratecmhr", "Suggested Flow Rate (cm/hr)"],
     "lib_ph_range": ["stable_ph_range", "Stable pH Range"],
@@ -97,13 +99,34 @@ TECHNIQUE_MAP = {
     "aiex": ("AIEX", "AnionExchange"),
     "hydrophobic": ("HIC", "HydrophobicInteraction"),
     "hic": ("HIC", "HydrophobicInteraction"),
-    "size exclusion": ("SEC", "GelFiltration"),
-    "gel filtration": ("SEC", "GelFiltration"),
+    "size exclusion": ("SEC", "SizeExclusion"),
+    "gel filtration": ("SEC", "SizeExclusion"),
     "reversed phase": ("RPC", "ReversedPhase"),
     "reverse phase": ("RPC", "ReversedPhase"),
+    "chromatofocusing": ("CF", "Chromatofocusing"),
+    "desalting": ("DS", "Desalting"),
 }
 TECHNIQUE_MAP.update({k.lower(): tuple(v) for k, v in _env_json("TECHNIQUE_MAP", {}).items()})
 CONFIRMED_TECHNIQUE_XML = {"Affinity", "CationExchange"}
+# XML TechniqueName -> the text UNICORN shows in its Technique dropdown (confirmed from the New
+# Column Type dialog, 2026-10-04). Used to change the technique of an EXISTING Column Type, since
+# the Edit dialog's Technique cell takes the display text, not the XML token.
+TECHNIQUE_DISPLAY = {
+    "Any": "Any",
+    "Affinity": "Affinity Chromatography (AC)",
+    "AnionExchange": "Anion Exchange Chromatography (AIEX)",
+    "CationExchange": "Cation Exchange Chromatography (CIEX)",
+    "Chromatofocusing": "Chromatofocusing (CF)",
+    "Desalting": "Desalting (DS)",
+    "SizeExclusion": "Size Exclusion Chromatography (SEC)",
+    "HydrophobicInteraction": "Hydrophobic Interaction Chromatography (HIC)",
+    "ReversedPhase": "Reversed Phase Chromatography (RPC)",
+}
+# Written when the Resin Characteristics Library row has no technique. "Any" is a valid choice in
+# UNICORN's required Technique dropdown (New Column Type dialog, confirmed 2026-10-04); the XML
+# token "Any" is assumed (same as Hardware/Media <Name>Any</Name>). DEFAULT_TECHNIQUE_XML="" leaves
+# the element out instead (UNICORN then defaults to Affinity).
+DEFAULT_TECHNIQUE_XML = os.getenv("DEFAULT_TECHNIQUE_XML", "Any").strip() or None
 
 # Max linear flow rate has no Benchling source. The design doc says write it empty; the
 # mapping sheet proposes an interim 0.75 x default linear flow. Leave unset until
@@ -116,15 +139,16 @@ MAX_LINEAR_FLOW_FACTOR = float(_env("MAX_LINEAR_FLOW_FACTOR")) if _env("MAX_LINE
 REQUIRED_PLACEHOLDER = float(_env("REQUIRED_PLACEHOLDER", "0"))
 
 # Pressure Unit dropdown (matched case-insensitively) -> UNICORN ColumnType.xml unit token.
-# MPa is CONFIRMED from real exports; "bar" is UNCONFIRMED - export one bar column type from
-# UNICORN to check the token. Benchling library pressures are always in bar.
+# Both CONFIRMED from real exports (bar: a MabSelect PrismA export, 2026-10-04).
+# Benchling library pressures are always in bar.
 PRESSURE_UNIT_XML = {"bar": "bar", "mpa": "MPa"}
-CONFIRMED_PRESSURE_UNIT_XML = {"MPa"}
+CONFIRMED_PRESSURE_UNIT_XML = {"MPa", "bar"}
 DEFAULT_PRESSURE_UNIT = "mpa"  # used (with a warning) when Pressure Unit is empty
 
 # UNICORN Column Type name - this is the <Name> shown in the Column Handling library, so it's
 # also the dedup key (same name -> Edit path, new name -> Import path). Fields: {name} Benchling
-# name, {registry_id}, {resin}, {d} diameter, {h} bed height, {v} volume (as entered, up to
+# name, {registry_id}, {resin} the column's Resin Type field (falls back to the resin material
+# name), {d} diameter, {h} bed height, {v} volume (as entered, up to
 # 3 dp, always one decimal: 1 -> 1.0, 17.708 -> 17.708).
 # Default e.g. 'Poros 50 HS_1.0 x 20.3cm_17.708mL_COL001'.
 COLUMN_NAME_TEMPLATE = _env("COLUMN_NAME_TEMPLATE", "{resin}_{d} x {h}cm_{v}mL_{registry_id}")

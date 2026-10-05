@@ -84,12 +84,15 @@ python -m tools.run_local bfi_xxxxx        # writes ./out/incoming/<stem>.zip + 
 
 ## Open items
 - TechniqueName: `Affinity`, `CationExchange` confirmed; `AnionExchange`, `HydrophobicInteraction`,
-  `GelFiltration`, `ReversedPhase` assumed - confirm with one export each.
-- pH, particle size, ordering info: mapped and sent in `parameters`, not in the XML until their element
-  names are seen in an export.
+  `SizeExclusion`, `ReversedPhase`, `Chromatofocusing`, `Desalting` assumed (same pattern as the UNICORN
+  display names, e.g. "Size Exclusion Chromatography (SEC)") - confirm with one export each.
+- Empty technique on the resin library row is written as `Any` (`DEFAULT_TECHNIQUE_XML`). "Any" is a valid
+  option in UNICORN's Technique dropdown; the XML token `Any` is assumed - confirmed by the first such import.
+- pH, particle size, ordering info: optional in UNICORN, so not written to the XML (still mapped in
+  `parameters` in the job record for traceability).
 - Naming convention: `{resin}_{d} x {h}cm_{v}mL_{registry_id}`, e.g. `Poros 50 HS_1.0 x 20.3cm_17.708mL_COL001` (`COLUMN_NAME_TEMPLATE`). A name change creates a new column type rather than updating the existing one, since the name is the dedup key.
 - Max linear flow: from the column's `Max Linear Flow Rate (cm/h)`; if empty, written empty (`MAX_LINEAR_FLOW_FACTOR=0.75` enables the sheet's interim rule).
 - Pressure: `Max Pre-Column Pressure` is used as entered, in the column's `Pressure Unit` (bar or MPa); the resin library
-  `max_pressure_bar` becomes Max delta column pressure (kept for bar, / 10 for MPa). UNICORN's XML token for bar is
-  assumed `bar` - confirm with one export of a bar column type.
+  `max_pressure_bar` becomes Max delta column pressure (kept for bar, / 10 for MPa). UNICORN's XML token `bar` is
+  confirmed from a real export.
 - Lilly tenant IP allowlist: the Lambda needs a VPC + NAT with an allowlisted IP there.
