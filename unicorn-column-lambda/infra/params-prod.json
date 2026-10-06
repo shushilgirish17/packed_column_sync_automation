@@ -1,20 +1,23 @@
 [
   { "ParameterKey": "EnvName",               "ParameterValue": "prod" },
   { "ParameterKey": "LogLevel",              "ParameterValue": "INFO" },
+  { "ParameterKey": "ArtifactBucket",        "ParameterValue": "packed-column-sync-artifacts-278375638990" },
+  { "ParameterKey": "CodeS3Key",             "ParameterValue": "packed-column-sync/packed-column-sync.zip" },
+  { "ParameterKey": "LayerS3Key",            "ParameterValue": "packed-column-sync/packed-column-sync-layer.zip" },
 
   { "ParameterKey": "BenchlingUrl",          "ParameterValue": "https://<lilly-prod-tenant>.benchling.com" },
-  { "ParameterKey": "BenchlingClientId",     "ParameterValue": "<benchling-app-client-id>" },
-  { "ParameterKey": "AppDefinitionId",       "ParameterValue": "<appdef_xxxxxxxx>" },
-  { "ParameterKey": "PackedColumnSchemaId",  "ParameterValue": "<ts_xxxxxxxx>" },
-  { "ParameterKey": "ResinLibrarySchemaId",  "ParameterValue": "<assaysch_xxxxxxxx>" },
-  { "ParameterKey": "ColumnPackingSchemaId", "ParameterValue": "" },
+  { "ParameterKey": "BenchlingClientId",     "ParameterValue": "1FnJ5fJo3Vo" },
+  { "ParameterKey": "AppDefinitionId",       "ParameterValue": "appdef_lYum406f4V" },
+  { "ParameterKey": "PackedColumnSchemaId",  "ParameterValue": "ts_AJliSA2awf" },
+  { "ParameterKey": "ResinLibrarySchemaId",  "ParameterValue": "assaysch_yNYYArXbpH" },
+  { "ParameterKey": "ColumnPackingSchemaId", "ParameterValue": "assaysch_InEaOqToeK" },
 
   { "ParameterKey": "ImportAccessScope",     "ParameterValue": "Global" },
   { "ParameterKey": "ColumnNameTemplate",    "ParameterValue": "{resin}_{d} x {h}cm_{v}mL_{registry_id}" },
   { "ParameterKey": "MaxLinearFlowFactor",   "ParameterValue": "" },
 
-  { "ParameterKey": "VpcId",                 "ParameterValue": "<vpc-xxxxxxxx>" },
-  { "ParameterKey": "SubnetIds",             "ParameterValue": "<subnet-aaaaaaaa>,<subnet-bbbbbbbb>" },
+  { "ParameterKey": "VpcId",                 "ParameterValue": "vpc-06a3d8f2cdafb8a6e" },
+  { "ParameterKey": "SubnetIds",             "ParameterValue": "subnet-0e9d5725627836404" },
 
   { "ParameterKey": "KmsKeyArn",             "ParameterValue": "" },
   { "ParameterKey": "PermissionsBoundaryArn","ParameterValue": "" },

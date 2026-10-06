@@ -14,32 +14,32 @@
 | IAM managed policy | `packed-column-sync-<env>-unicorn-consumer` | For the on-prem UNICORN host |
 
 ## Before the first deploy (once per account)
-1. **Artifact bucket** for the packaged code, e.g. `packed-column-sync-artifacts-<account>`.
+1. **Artifact bucket**: any existing S3 bucket in the deploy region, e.g. `packed-column-sync-artifacts-<account>`.
 2. **From Lilly:** VPC + private subnets whose NAT egress IP is on the Benchling tenant allowlist,
    and - if required - KMS key ARN, permissions boundary ARN, mandatory tags.
-3. **Fill `params-<env>.json`** - replace every `<...>` value. Empty `""` = feature off.
+3. **Fill `params-<env>.json`** - replace every `<...>` value. Empty `""` = feature off
+   (`VpcId` + `SubnetIds` both empty = Lambda outside a VPC, which the Lilly IP allowlist will block).
 
-## Deploy
-Run from `unicorn-column-lambda/`. Add `--profile <profile> --region <region>` to every `aws` command.
-
-1. Build the layer and code zips into `dist/`:
+## Deploy (console)
+1. Build both zips into `dist/` (from `unicorn-column-lambda/`):
    ```bash
    python build.py
    ```
-2. Lint:
-   ```bash
-   cfn-lint infra/template.yaml
-   ```
-   Two `W3002` warnings (local code paths) are expected - step 3 resolves them.
-3. Upload the zips and write `infra/packaged.yaml` with their S3 locations:
-   ```bash
-   aws cloudformation package --template-file infra/template.yaml --s3-bucket packed-column-sync-artifacts-<account> --output-template-file infra/packaged.yaml
-   ```
-4. Create a change set and **review it before executing** (keep it as change-control evidence):
-   ```bash
-   aws cloudformation deploy --template-file infra/packaged.yaml --stack-name packed-column-sync-dev --parameter-overrides file://infra/params-dev.json --capabilities CAPABILITY_NAMED_IAM --no-execute-changeset --tags Application=PackedColumnSync Environment=dev
-   ```
-   Then run the same command without `--no-execute-changeset`.
+2. **S3 console** -> artifact bucket -> upload `dist/packed-column-sync.zip` and
+   `dist/packed-column-sync-layer.zip` under the prefix `packed-column-sync/`
+   (keys must match `CodeS3Key` / `LayerS3Key`).
+3. **CloudFormation console** -> Create stack -> *With new resources* -> *Upload a template file* ->
+   `infra/template.yaml`.
+4. Stack name `packed-column-sync-dev`; fill the parameters from `params-dev.json`.
+5. Add tags (e.g. `Application=PackedColumnSync`, `Environment=dev`), tick
+   **"I acknowledge that AWS CloudFormation might create IAM resources with custom names"**.
+6. Review, then Submit. Keep the change set / events as change-control evidence.
+
+Same with the CLI (after step 2):
+```bash
+aws cloudformation deploy --template-file infra/template.yaml --stack-name packed-column-sync-dev --parameter-overrides file://infra/params-dev.json --capabilities CAPABILITY_NAMED_IAM --no-execute-changeset --tags Application=PackedColumnSync Environment=dev
+```
+Review the change set, then run it again without `--no-execute-changeset`.
 
 ## After the first deploy
 1. **Set the Benchling client secret** (the stack creates it with a placeholder; the Lambda refuses to
@@ -48,6 +48,8 @@ Run from `unicorn-column-lambda/`. Add `--profile <profile> --region <region>` t
    aws secretsmanager put-secret-value --secret-id packed-column-sync/dev/benchling --secret-string file://benchling-secret.json
    ```
    Delete the file afterwards. Stack updates never overwrite this value.
+   Console alternative: Secrets Manager -> `packed-column-sync/dev/benchling` -> *Retrieve secret value*
+   -> *Edit* -> Plaintext `{"client_secret":"<value>"}` -> Save.
 2. **Benchling App** -> set the webhook URL to the `WebhookUrl` output. `AppDefinitionId` must match the app.
 3. **UNICORN host:** attach `ConsumerPolicyArn` to its AWS identity (role or Identity Center permission
    set, by `ConsumerPolicyName`), then in the root `.env` set `SQS_QUEUE_URL` (= `QueueUrl`),
@@ -61,8 +63,11 @@ aws cloudformation describe-stacks --stack-name packed-column-sync-dev --query "
 ```
 
 ## Updates
-Code change: `python build.py --code`, then steps 3-4. Dependency change: `python build.py`, then 3-4.
-Parameter change: edit the params file, then step 4.
+- **Code change:** `python build.py --code`, upload the zip under a **new key** (e.g.
+  `packed-column-sync/packed-column-sync-v2.zip`), then *Update stack* -> *Use current template* and set
+  `CodeS3Key` to the new key. Re-using the same key does NOT update the Lambda.
+- **Dependency change:** `python build.py`, new key for the layer zip, update `LayerS3Key` the same way.
+- **Parameter change:** *Update stack* -> *Use current template* -> change the value.
 
 ## Notes
 - **KMS:** a customer key must allow `logs.<region>.amazonaws.com` (log group) and the UNICORN host

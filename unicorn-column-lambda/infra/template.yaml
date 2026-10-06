@@ -4,16 +4,16 @@ Description: >-
   S3 job package + SQS FIFO job message, consumed by the on-prem UNICORN polling agent
   (tools/sqs_pull.py + tools/watch_service.ps1). See infra/README.md for deployment.
 
-# Build and package first (code paths below are local and rewritten by `aws cloudformation package`):
-#   python build.py
-#   aws cloudformation package --template-file infra/template.yaml --s3-bucket <artifact-bucket> \
-#       --output-template-file infra/packaged.yaml
+# Deployable straight from the console: build the zips (python build.py), upload them to an S3
+# bucket in the same region, and give that bucket + keys as ArtifactBucket / CodeS3Key / LayerS3Key.
 
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
       - Label: { default: Environment }
         Parameters: [EnvName, NamePrefix, LogLevel]
+      - Label: { default: "Lambda code (zips from build.py, uploaded to S3 in this region)" }
+        Parameters: [ArtifactBucket, CodeS3Key, LayerS3Key]
       - Label: { default: Benchling }
         Parameters: [BenchlingUrl, BenchlingClientId, AppDefinitionId, PackedColumnSchemaId,
                      ResinLibrarySchemaId, ColumnPackingSchemaId]
@@ -40,6 +40,21 @@ Parameters:
     Type: String
     Default: INFO
     AllowedValues: [DEBUG, INFO, WARNING, ERROR]
+
+  ArtifactBucket:
+    Type: String
+    MinLength: 3
+    Description: Existing S3 bucket (same region) holding the two zips from build.py.
+  CodeS3Key:
+    Type: String
+    Default: packed-column-sync/packed-column-sync.zip
+    Description: >-
+      Key of dist/packed-column-sync.zip. Use a NEW key for each code release (e.g. ...-v2.zip) -
+      CloudFormation only updates the Lambda when this value changes.
+  LayerS3Key:
+    Type: String
+    Default: packed-column-sync/packed-column-sync-layer.zip
+    Description: Key of dist/packed-column-sync-layer.zip. New key when requirements.txt changes.
 
   BenchlingUrl:
     Type: String
@@ -303,7 +318,9 @@ Resources:
     Properties:
       LayerName: !Sub "${NamePrefix}-${EnvName}-deps"
       Description: benchling-sdk and dependencies (requirements.txt)
-      Content: ../dist/packed-column-sync-layer.zip
+      Content:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref LayerS3Key
       CompatibleRuntimes: [python3.14]
       CompatibleArchitectures: [x86_64]
 
@@ -315,7 +332,9 @@ Resources:
       Runtime: python3.14
       Architectures: [x86_64]
       Handler: lambda_function.lambda_handler
-      Code: ../dist/packed-column-sync.zip
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref CodeS3Key
       Layers: [!Ref DependencyLayer]
       Role: !GetAtt FunctionRole.Arn
       MemorySize: 512
