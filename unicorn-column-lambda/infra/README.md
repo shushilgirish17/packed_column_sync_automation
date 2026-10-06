@@ -12,6 +12,7 @@
 | Log group | `/aws/lambda/packed-column-sync-<env>` | Execution + audit log (retained on stack delete) |
 | IAM role | `packed-column-sync-<env>-lambda` | Least privilege on this stack's resources only |
 | IAM managed policy | `packed-column-sync-<env>-unicorn-consumer` | For the on-prem UNICORN host |
+| SNS topic + email (if `AlertEmail` set) | `packed-column-sync-<env>-failures` | Email on every sync failure (validation, Benchling, UNICORN) |
 
 ## Before the first deploy (once per account)
 1. **Artifact bucket**: any existing S3 bucket in the deploy region, e.g. `packed-column-sync-artifacts-<account>`.
@@ -50,11 +51,13 @@ Review the change set, then run it again without `--no-execute-changeset`.
    Delete the file afterwards. Stack updates never overwrite this value.
    Console alternative: Secrets Manager -> `packed-column-sync/dev/benchling` -> *Retrieve secret value*
    -> *Edit* -> Plaintext `{"client_secret":"<value>"}` -> Save.
-2. **Benchling App** -> set the webhook URL to the `WebhookUrl` output. `AppDefinitionId` must match the app.
-3. **UNICORN host:** attach `ConsumerPolicyArn` to its AWS identity (role or Identity Center permission
+2. **Failure alerts** (if `AlertEmail` set): the address gets an *AWS Notification - Subscription
+   Confirmation* email - click *Confirm subscription*, or no alerts are delivered.
+3. **Benchling App** -> set the webhook URL to the `WebhookUrl` output. `AppDefinitionId` must match the app.
+4. **UNICORN host:** attach `ConsumerPolicyArn` to its AWS identity (role or Identity Center permission
    set, by `ConsumerPolicyName`), then in the root `.env` set `SQS_QUEUE_URL` (= `QueueUrl`),
    `LAMBDA_FUNCTION_NAME` (= `FunctionName`), `AWS_PROFILE`, `AWS_REGION`.
-4. **Smoke test:** one Active column from the canvas -> Queued -> picked up by `sqs_pull.py` /
+5. **Smoke test:** one Active column from the canvas -> Queued -> picked up by `sqs_pull.py` /
    `watch_service.ps1` -> canvas shows Synced; audit line in CloudWatch.
 
 Read all outputs with:

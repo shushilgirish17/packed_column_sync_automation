@@ -24,7 +24,7 @@ Metadata:
       - Label: { default: Organisation guardrails (leave empty if not required) }
         Parameters: [KmsKeyArn, PermissionsBoundaryArn]
       - Label: { default: Operations }
-        Parameters: [ImportRetentionDays, LogRetentionDays, QueueVisibilityTimeoutSec]
+        Parameters: [AlertEmail, ImportRetentionDays, LogRetentionDays, QueueVisibilityTimeoutSec]
 
 Parameters:
   EnvName:
@@ -114,6 +114,13 @@ Parameters:
     Default: ""
     Description: IAM permissions boundary required by the account, if any.
 
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: >-
+      Email (e.g. an operations distribution list) that receives an alert for every sync FAILURE
+      (validation, Benchling, UNICORN). Empty = no notification resources. The address must confirm
+      the subscription from the email SNS sends after deploy.
   ImportRetentionDays:
     Type: Number
     Default: 90
@@ -137,6 +144,7 @@ Conditions:
   UseVpc: !Not [!Equals [!Join ["", !Ref SubnetIds], ""]]
   UseKms: !Not [!Equals [!Ref KmsKeyArn, ""]]
   UseBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
+  UseAlerts: !Not [!Equals [!Ref AlertEmail, ""]]
 
 Resources:
   # ------------------------------------------------------------------ secrets
@@ -271,6 +279,13 @@ Resources:
                 Effect: Allow
                 Action: sqs:SendMessage
                 Resource: !GetAtt JobQueue.Arn
+              - !If
+                - UseAlerts
+                - Sid: PublishFailureAlerts   # sync/notify.py
+                  Effect: Allow
+                  Action: sns:Publish
+                  Resource: !Ref FailureTopic
+                - !Ref AWS::NoValue
               - Sid: AsyncSelfInvoke    # webhook is acked fast, sync runs in an async self-invoke
                 Effect: Allow
                 Action: lambda:InvokeFunction
@@ -363,6 +378,7 @@ Resources:
           COLUMN_NAME_TEMPLATE: !Ref ColumnNameTemplate
           MAX_LINEAR_FLOW_FACTOR: !Ref MaxLinearFlowFactor
           LOG_LEVEL: !Ref LogLevel
+          FAILURE_TOPIC_ARN: !If [UseAlerts, !Ref FailureTopic, ""]
 
   # A failed async sync is already reported on the canvas; don't silently re-run it.
   SyncFunctionAsyncConfig:
@@ -399,6 +415,23 @@ Resources:
       Principal: "*"
       InvokedViaFunctionUrl: true
 
+  # ------------------------------------------------------------------ failure alerts (optional)
+  FailureTopic:
+    Type: AWS::SNS::Topic
+    Condition: UseAlerts
+    Properties:
+      TopicName: !Sub "${NamePrefix}-${EnvName}-failures"
+      DisplayName: UNICORN Sync
+      KmsMasterKeyId: !If [UseKms, !Ref KmsKeyArn, !Ref AWS::NoValue]
+
+  FailureEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: UseAlerts
+    Properties:
+      TopicArn: !Ref FailureTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
 Outputs:
   WebhookUrl:
     Description: Set as the webhook URL of the Benchling App (Developer Console).
@@ -420,3 +453,7 @@ Outputs:
   ConsumerPolicyName:
     Description: Name to reference from an IAM Identity Center permission set.
     Value: !Sub "${NamePrefix}-${EnvName}-unicorn-consumer"
+  FailureTopicArn:
+    Condition: UseAlerts
+    Description: SNS topic for sync-failure emails (add more subscribers here).
+    Value: !Ref FailureTopic

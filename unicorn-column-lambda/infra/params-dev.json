@@ -23,6 +23,7 @@
   { "ParameterKey": "KmsKeyArn",             "ParameterValue": "" },
   { "ParameterKey": "PermissionsBoundaryArn","ParameterValue": "" },
 
+  { "ParameterKey": "AlertEmail",            "ParameterValue": "**@network.lilly.com" },
   { "ParameterKey": "ImportRetentionDays",   "ParameterValue": "90" },
   { "ParameterKey": "LogRetentionDays",      "ParameterValue": "365" },
   { "ParameterKey": "QueueVisibilityTimeoutSec", "ParameterValue": "300" }
