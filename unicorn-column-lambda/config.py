@@ -174,6 +174,8 @@ USE_REGISTRY_ID_AS_CODE_NUMBER = _env_bool("USE_REGISTRY_ID_AS_CODE_NUMBER", Tru
 IMPORT_BUCKET = _env("IMPORT_BUCKET")
 IMPORT_PREFIX = _env("IMPORT_PREFIX", "unicorn-sync/incoming")
 SQS_QUEUE_URL = _env("SQS_QUEUE_URL")
+# SNS topic for failure emails (sync/notify.py). Unset -> no notifications.
+FAILURE_TOPIC_ARN = _env("FAILURE_TOPIC_ARN")
 ASYNC_WEBHOOK = _env_bool("ASYNC_WEBHOOK", True)       # ack webhook fast, do the sync in an async self-invoke
 
 LOCAL_OUTPUT_DIR = _env("LOCAL_OUTPUT_DIR", "/tmp/unicorn-out" if os.getenv("AWS_LAMBDA_FUNCTION_NAME") else "out")

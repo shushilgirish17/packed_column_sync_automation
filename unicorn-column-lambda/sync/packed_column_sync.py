@@ -12,6 +12,7 @@ from sync.benchling_reader import BenchlingReader
 from sync.import_file import content_hash, queue_import_job
 from sync.mapping import map_column
 from sync.models import ColumnOutcome, SyncError
+from sync.notify import notify_failure
 from sync.validate import validate_column
 
 log = logging.getLogger(__name__)
@@ -51,6 +52,10 @@ def sync_columns(reader: BenchlingReader, column_ids: List[str], trigger: dict) 
             log.exception("Column %s failed unexpectedly", column_id)
 
         _audit(outcome, trigger)
+        if outcome.result == "Failure":
+            notify_failure("Benchling validation / mapping", outcome.message, outcome.registry_id,
+                           outcome.column_name, column_id, outcome.error_kind,
+                           trigger.get("user"), trigger.get("entry_id"))
         outcomes.append(outcome)
     return outcomes
 
