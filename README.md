@@ -1,14 +1,66 @@
 # UNICORN Packed Column Sync — Automation
 
-Automation for syncing **packed column** data from Benchling into Cytiva
-**UNICORN**'s Column Type library.
+Automation that syncs **packed column** data from Benchling into Cytiva
+**UNICORN**'s Column Type library — without a human re-typing values and
+without writing to UNICORN's database directly.
 
 UNICORN exposes no API for column data (confirmed with Cytiva), and its
 Technical Manual advises against writing to the database directly. So this
-project drives UNICORN through supported application features — **Import** and
-**Edit** in the Column Handling dialog — using Windows UI Automation and
+project drives UNICORN through supported application features — **Import**
+and **Edit** in the Column Handling dialog — using Windows UI Automation and
 WinAppDriver. All values are read from Benchling and written through the
 application, so UNICORN's own validation and audit trail stay intact.
+
+This repo (`unicorn_automation_test`) is the **on-prem consumer**: it watches
+for jobs and drives the UNICORN desktop client. The upstream half that reads
+Benchling and produces those jobs lives in
+[`unicorn-column-lambda/`](unicorn-column-lambda/README.md).
+
+## Contents
+
+- [Architecture](#architecture)
+- [Two write paths](#two-write-paths-both-verified-end-to-end)
+- [Layout](#layout)
+- [Prerequisites](#prerequisites)
+- [Setup](#setup)
+- [Usage](#usage)
+  - [SQS/S3 pipeline](#sqss3-pipeline)
+  - [Run it continuously](#run-it-continuously-auto-triggered)
+- [Import archive format](#import-archive-format-reverse-engineered)
+- [Critical gotchas](#critical-gotchas-learned-the-hard-way)
+- [Status](#status)
+
+## Architecture
+
+End-to-end flow, from a Benchling result field to a saved UNICORN column type:
+
+![Architecture diagram](docs/architecture-diagram.png)
+
+1. A Benchling event (packed column result) triggers the Benchling App.
+2. The app posts the event to a Lambda function rule.
+3. Lambda reads the entity and its result field values from Benchling.
+4. Lambda retrieves Benchling credentials from **Secrets Manager**.
+5. Lambda generates the UNICORN import `.zip` and writes it to **S3**.
+6. Lambda enqueues a job (S3 key + column ID) on **SQS**.
+7. On the Windows host, the **Local Agent** (an interactive Task Scheduler
+   job) polls the queue and receives the job.
+8. The agent downloads the job's zip from S3.
+9. The agent drives UI Automation against the **UNICORN Client**, via
+   WinAppDriver.
+10. UNICORN writes the column type to its **SQL Server** database — either
+    by importing the zip (new column type) or editing an existing one.
+11. The agent confirms the write succeeded.
+12. The agent reports the result (Synced/Failed) back to Lambda.
+13. On success, Lambda updates the column's status back in Benchling.
+14. On failure, Lambda publishes to **Amazon SNS**.
+15. SNS emails the on-call users.
+
+Throughout, Lambda writes an audit log line to **CloudWatch**.
+
+Steps 1–6 and 12–15 are implemented in
+[`unicorn-column-lambda/`](unicorn-column-lambda/README.md); steps 7–11 are
+implemented in this repo (`tools/sqs_pull.py`, `tools/watch_service.ps1`,
+`tools/sync_column.ps1`).
 
 ## Two write paths (both verified end-to-end)
 
@@ -17,8 +69,8 @@ application, so UNICORN's own validation and audit trail stay intact.
 | Column type **does not exist** → create | **Import** | Generate a UNICORN import `.zip` from a Benchling record and import it via Column Handling → Import |
 | Column type **exists** → update values | **Edit** | Select it, open Edit, set the writable cells, Save |
 
-Reading the existing library (for dedup / reconciliation) is done by driving the
-Column Handling list, not by querying the database.
+Reading the existing library (for dedup / reconciliation) is done by driving
+the Column Handling list, not by querying the database.
 
 ## Layout
 
@@ -41,7 +93,7 @@ fixtures/                  Test data
   export_sample_a/b.zip    Real UNICORN exports (prove the archive format)
   corrupt_crc.zip          Bad-checksum archive (UNICORN rejects it)
 
-docs/                      Write-ups and requests for stakeholders
+docs/                      Write-ups, diagrams, and requests for stakeholders
 exports/                   Runtime output (git-ignored)
 ```
 
@@ -195,7 +247,7 @@ A column-type export/import is a plain **ZIP** (UNICORN 7.10, `FormatVersion="2"
 `<AccessScopeName>` controls visibility: **`Personal`** (only the creator sees
 it — use for testing) or **`Global`** (everyone — production).
 
-## Critical gotchas (learned the hard way — see the notes below)
+## Critical gotchas (learned the hard way)
 
 - **Never call `InvokePattern.Invoke()` on a control that opens a modal.** It
   blocks UNICORN's entire UI Automation provider; killing the process while it

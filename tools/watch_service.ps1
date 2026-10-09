@@ -154,6 +154,7 @@ function Process-Job($jobFile) {
     $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $syncScript,
               '-ColumnName', $job.columnName)
     if ($job.set)  { $args += @('-Set', $job.set) }
+    if ($job.pressureUnit) { $args += @('-PressureUnit', $job.pressureUnit) }
     if ($procZip)  { $args += @('-ImportZip', $procZip) }
 
     Log "  running sync_column..."

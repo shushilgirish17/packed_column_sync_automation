@@ -25,10 +25,6 @@ def _round(x: Optional[float], ndigits: int = 2) -> Optional[float]:
     return None if x is None else round(x, ndigits)
 
 
-def _fmt(x: float) -> str:
-    return f"{x:g}"
-
-
 def column_area_cm2(diameter_cm: float) -> float:
     return math.pi * (diameter_cm / 2.0) ** 2
 
@@ -43,11 +39,18 @@ def parse_ph_range(raw) -> Tuple[float, float]:
     return low, high
 
 
+_CODE_IN_PARENS = re.compile(r"\(([A-Za-z]+)\)\s*$")
+
+
 def map_technique(raw) -> Tuple[str, str]:
-    """-> (display code, UNICORN XML TechniqueName)."""
+    """-> (display code, UNICORN XML TechniqueName). Accepts the Benchling 'UNICORN Technique'
+    dropdown options, e.g. 'Anion Exchange Chromatography (AIEX)' - matched by the code in
+    brackets first - as well as free text like 'cation' or 'Protein A'."""
     text = str(raw).strip().lower()
+    paren = _CODE_IN_PARENS.search(text)
+    candidates = (text, paren.group(1)) if paren else (text,)
     for code, xml in config.TECHNIQUE_MAP.values():
-        if text in (code.lower(), xml.lower()):
+        if any(c in (code.lower(), xml.lower()) for c in candidates):
             return code, xml
     # longest key first so 'reversed phase' beats short keys like 'hic'
     for key in sorted(config.TECHNIQUE_MAP, key=len, reverse=True):
@@ -56,16 +59,29 @@ def map_technique(raw) -> Tuple[str, str]:
     raise MappingError(f"Technique {raw!r} has no UNICORN TechniqueName (extend TECHNIQUE_MAP)")
 
 
+def _name_num(x: float) -> str:
+    """Geometry as entered, up to 3 dp, always one decimal: 1 -> '1.0', 17.708 -> '17.708'."""
+    return str(round(float(x), 3))
+
+
 def build_column_type_name(name: str, diameter: float, bed_height: float, volume: float,
                            registry_id: str = None, resin: str = None) -> str:
     """Deterministic (UNICORN prompts on name collision), e.g.
-    'ZZTEST-BenchlingSync-DELETE-ME 1x10cm 7.9mL' with the default template."""
+    'Poros 50 HS_1.0 x 20.3cm_17.708mL_COL001' with the default template."""
     try:
         return config.COLUMN_NAME_TEMPLATE.format(
             name=name, registry_id=registry_id or "", resin=resin or "",
-            d=_fmt(diameter), h=_fmt(bed_height), v=_fmt(round(volume, 1))).strip()
+            d=_name_num(diameter), h=_name_num(bed_height), v=_name_num(volume)).strip()
     except (KeyError, IndexError) as e:
         raise MappingError(f"COLUMN_NAME_TEMPLATE has unknown placeholder {e}") from e
+
+
+def map_pressure_unit(raw) -> Tuple[str, str]:
+    """Pressure Unit dropdown -> (key 'bar'|'mpa', UNICORN XML token)."""
+    key = str(raw).strip().lower()
+    if key not in config.PRESSURE_UNIT_XML:
+        raise MappingError(f"Pressure Unit {raw!r} is not one of: bar, MPa")
+    return key, config.PRESSURE_UNIT_XML[key]
 
 
 def map_column(src: ColumnSource) -> ColumnType:
@@ -84,20 +100,44 @@ def map_column(src: ColumnSource) -> ColumnType:
     technique_raw = lib.display(f["lib_technique"])
     technique, technique_xml = map_technique(technique_raw) if technique_raw else (None, None)
     if technique is None:
-        warnings.append("Technique empty on Resin Characteristics Library row")
+        technique = technique_xml = config.DEFAULT_TECHNIQUE_XML
+        warnings.append("Technique empty on Resin Characteristics Library row"
+                        + (f" - written as '{technique_xml}'" if technique_xml else ""))
     elif technique_xml not in config.CONFIRMED_TECHNIQUE_XML:
         warnings.append(f"TechniqueName '{technique_xml}' not yet confirmed against a UNICORN export")
 
-    # --- Pressure: bar -> MPa --------------------------------------------------
-    max_pressure_mpa = None
+    # --- Pressure: in the unit picked on the column (bar or MPa) -----------------
+    # Max pre-column pressure is entered on the column in that unit and used as-is. Max delta
+    # column pressure comes from the resin library (always bar): kept for bar, / 10 for MPa.
+    unit_raw = src.fields.display(f["pressure_unit"])
+    if unit_raw is None:
+        unit_raw = config.DEFAULT_PRESSURE_UNIT
+        warnings.append(f"Pressure Unit empty on column - using {config.PRESSURE_UNIT_XML[unit_raw]}")
+    unit_key, pressure_unit = map_pressure_unit(unit_raw)
+    if pressure_unit not in config.CONFIRMED_PRESSURE_UNIT_XML:
+        warnings.append(f"Pressure unit '{pressure_unit}' not yet confirmed against a UNICORN export")
+    from_bar = 1.0 if unit_key == "bar" else 0.1
+
+    lib_pressure = None
     pressure_raw = lib.value(f["lib_max_pressure_bar"])
     if pressure_raw is not None:
         bar = to_number(pressure_raw)
         if bar is None:
             raise MappingError(f"max_pressure_bar {pressure_raw!r} is not numeric")
-        max_pressure_mpa = _round(bar / 10.0, 4)
+        lib_pressure = _round(bar * from_bar, 4)
     else:
         warnings.append("max_pressure_bar empty on Resin Characteristics Library row")
+    delta_pressure = lib_pressure
+
+    pre_pressure = None
+    pre_raw = src.fields.value(f["max_pre_pressure"])
+    if pre_raw is not None:
+        pre_pressure = to_number(pre_raw)
+        if pre_pressure is None:
+            raise MappingError(f"Max Pre-Column Pressure {pre_raw!r} is not numeric")
+    elif lib_pressure is not None:
+        pre_pressure = lib_pressure
+        warnings.append("Max Pre-Column Pressure empty on column - taken from resin library max_pressure_bar")
 
     # --- Flow: prefer column instance value, fall back to resin suggestion -----
     linear_raw = src.fields.value(f["linear_flow"])
@@ -111,12 +151,19 @@ def map_column(src: ColumnSource) -> ColumnType:
     if linear_flow is None:
         warnings.append("No default linear flow rate on column or resin library")
 
-    default_flow = _round(linear_flow * area / 60.0) if linear_flow is not None else None
+    # 4 dp, not 2: UNICORN stores only the volumetric flow and derives the linear flow from it, so
+    # 98.17 ml/min came back as 299.99 cm/h; 98.1748 comes back as the 300 entered in Benchling.
+    default_flow = _round(linear_flow * area / 60.0, 4) if linear_flow is not None else None
     max_linear = None
-    if config.MAX_LINEAR_FLOW_FACTOR is not None and linear_flow is not None:
+    max_linear_raw = src.fields.value(f["max_linear_flow"])
+    if max_linear_raw is not None:
+        max_linear = to_number(max_linear_raw)
+        if max_linear is None:
+            raise MappingError(f"Max Linear Flow Rate {max_linear_raw!r} is not numeric")
+    elif config.MAX_LINEAR_FLOW_FACTOR is not None and linear_flow is not None:
         max_linear = _round(linear_flow * config.MAX_LINEAR_FLOW_FACTOR)
         warnings.append(f"Max linear flow is interim rule {config.MAX_LINEAR_FLOW_FACTOR} x default linear flow")
-    max_flow = _round(max_linear * area / 60.0) if max_linear is not None else None
+    max_flow = _round(max_linear * area / 60.0, 4) if max_linear is not None else None
 
     # --- pH: single Benchling range reused for short and long term -------------
     ph_low = ph_high = None
@@ -140,8 +187,11 @@ def map_column(src: ColumnSource) -> ColumnType:
     hardware_name = src.hardware.name if src.hardware else src.fields.display(f["hardware_link"])
     hardware_code = src.hardware.fields.display(f["hardware_catalog"]) if src.hardware else None
 
-    resin_label = resin_name or src.fields.display(f["resin_type_text"])
-    name = build_column_type_name(src.name, diameter, bed_height, volume, src.registry_id, resin_label)
+    resin_type = src.fields.display(f["resin_type_text"])
+    resin_label = resin_name or resin_type
+    # Name uses the column's own Resin Type (e.g. 'POROS XQ'), not the resin lot/material name.
+    name = build_column_type_name(src.name, diameter, bed_height, volume, src.registry_id,
+                                  resin_type or resin_label)
     status = str(src.fields.display(f["status"]))
 
     # Values that go into ColumnType.xml. UNICORN derives column volume and linear flows
@@ -156,12 +206,15 @@ def map_column(src: ColumnSource) -> ColumnType:
 
     unicorn = {
         "technique_xml": technique_xml,
+        # Display text for editing an existing Column Type - only for a technique set in Benchling.
+        "technique_display": config.TECHNIQUE_DISPLAY.get(technique_xml) if technique_raw else None,
         "diameter": diameter,
         "bed_height": bed_height,
         "default_flow": required("Default flow rate", default_flow),
         "max_flow": required("Max flow rate", max_flow),
-        "pre_pressure": required("Max pre-column pressure", max_pressure_mpa),
-        "delta_pressure": required("Max delta column pressure", max_pressure_mpa),
+        "pressure_unit": pressure_unit,
+        "pre_pressure": required("Max pre-column pressure", pre_pressure),
+        "delta_pressure": required("Max delta column pressure", delta_pressure),
         "placeholders": placeholders,
     }
     if placeholders:
@@ -172,8 +225,8 @@ def map_column(src: ColumnSource) -> ColumnType:
         RUN: {
             "Technique": _p(technique),
             "Column volume": _p(_round(volume, 3), "ml"),
-            "Max pre-column pressure": _p(max_pressure_mpa, "MPa"),
-            "Max delta column pressure": _p(max_pressure_mpa, "MPa"),
+            "Max pre-column pressure": _p(pre_pressure, pressure_unit),
+            "Max delta column pressure": _p(delta_pressure, pressure_unit),
             "Default flow rate": _p(default_flow, "ml/min"),
             "Max flow rate": _p(max_flow, "ml/min"),
             "Default linear flow rate": _p(_round(linear_flow), "cm/h"),

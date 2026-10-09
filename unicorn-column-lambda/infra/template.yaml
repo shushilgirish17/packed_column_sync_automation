@@ -1,0 +1,459 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Packed Column Sync (ELYC_PackedColumnSync) - Benchling App Canvas webhook -> Lambda ->
+  S3 job package + SQS FIFO job message, consumed by the on-prem UNICORN polling agent
+  (tools/sqs_pull.py + tools/watch_service.ps1). See infra/README.md for deployment.
+
+# Deployable straight from the console: build the zips (python build.py), upload them to an S3
+# bucket in the same region, and give that bucket + keys as ArtifactBucket / CodeS3Key / LayerS3Key.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: Environment }
+        Parameters: [EnvName, NamePrefix, LogLevel]
+      - Label: { default: "Lambda code (zips from build.py, uploaded to S3 in this region)" }
+        Parameters: [ArtifactBucket, CodeS3Key, LayerS3Key]
+      - Label: { default: Benchling }
+        Parameters: [BenchlingUrl, BenchlingClientId, AppDefinitionId, PackedColumnSchemaId,
+                     ResinLibrarySchemaId, ColumnPackingSchemaId]
+      - Label: { default: UNICORN import }
+        Parameters: [ImportAccessScope, ColumnNameTemplate, MaxLinearFlowFactor]
+      - Label: { default: Network (Lambda must egress through the Benchling-allowlisted NAT IP) }
+        Parameters: [VpcId, SubnetIds]
+      - Label: { default: Organisation guardrails (leave empty if not required) }
+        Parameters: [KmsKeyArn, PermissionsBoundaryArn]
+      - Label: { default: Operations }
+        Parameters: [AlertEmail, ImportRetentionDays, LogRetentionDays, QueueVisibilityTimeoutSec]
+
+Parameters:
+  EnvName:
+    Type: String
+    AllowedValues: [dev, qa, prod]
+    Description: Environment name; part of every resource name.
+  NamePrefix:
+    Type: String
+    Default: packed-column-sync
+    AllowedPattern: "^[a-z0-9-]{3,30}$"
+    Description: Prefix for resource names (lowercase, digits, hyphens).
+  LogLevel:
+    Type: String
+    Default: INFO
+    AllowedValues: [DEBUG, INFO, WARNING, ERROR]
+
+  ArtifactBucket:
+    Type: String
+    MinLength: 3
+    Description: Existing S3 bucket (same region) holding the two zips from build.py.
+  CodeS3Key:
+    Type: String
+    Default: packed-column-sync/packed-column-sync.zip
+    Description: >-
+      Key of dist/packed-column-sync.zip. Use a NEW key for each code release (e.g. ...-v2.zip) -
+      CloudFormation only updates the Lambda when this value changes.
+  LayerS3Key:
+    Type: String
+    Default: packed-column-sync/packed-column-sync-layer.zip
+    Description: Key of dist/packed-column-sync-layer.zip. New key when requirements.txt changes.
+
+  BenchlingUrl:
+    Type: String
+    AllowedPattern: "^https://.+"
+    Description: Benchling tenant URL, e.g. https://<tenant>.benchling.com
+  BenchlingClientId:
+    Type: String
+    Description: Benchling App client ID (not secret). The client SECRET is set after deploy - never here.
+  AppDefinitionId:
+    Type: String
+    AllowedPattern: "^appdef_.+"
+    Description: Benchling App definition ID, used to verify webhook signatures.
+  PackedColumnSchemaId:
+    Type: String
+    AllowedPattern: "^ts_.+"
+    Description: Packed Column entity schema ID.
+  ResinLibrarySchemaId:
+    Type: String
+    AllowedPattern: "^assaysch_.+"
+    Description: Resin Characteristics Library result schema ID.
+  ColumnPackingSchemaId:
+    Type: String
+    Default: ""
+    Description: Optional Column Packing result schema ID (leave empty if packing values are on the entity).
+
+  ImportAccessScope:
+    Type: String
+    Default: Personal
+    AllowedValues: [Personal, Global]
+    Description: UNICORN Column Type scope. Personal for testing, Global for production.
+  ColumnNameTemplate:
+    Type: String
+    Default: "{resin}_{d} x {h}cm_{v}mL_{registry_id}"
+    Description: >-
+      UNICORN Column Type name (also the dedup key), e.g. 'Poros 50 HS_1.0 x 20.3cm_17.708mL_COL001'.
+      Fields - {name} {registry_id} {resin} {d} {h} {v}.
+  MaxLinearFlowFactor:
+    Type: String
+    Default: ""
+    Description: Optional interim rule (e.g. 0.75 x default linear flow). Leave empty until confirmed.
+
+  VpcId:
+    Type: String
+    Default: ""
+    Description: VPC for the Lambda. Leave empty (with SubnetIds) to run outside a VPC - not for Lilly.
+  SubnetIds:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: Private subnets whose NAT gateway egress IP is on the Benchling tenant allowlist.
+
+  KmsKeyArn:
+    Type: String
+    Default: ""
+    Description: Customer-managed KMS key for S3, SQS, Secrets Manager and Logs. Empty = AWS-managed encryption.
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ""
+    Description: IAM permissions boundary required by the account, if any.
+
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: >-
+      Email (e.g. an operations distribution list) that receives an alert for every sync FAILURE
+      (validation, Benchling, UNICORN). Empty = no notification resources. The address must confirm
+      the subscription from the email SNS sends after deploy.
+  ImportRetentionDays:
+    Type: Number
+    Default: 90
+    MinValue: 1
+    Description: Days to keep job packages in S3.
+  LogRetentionDays:
+    Type: Number
+    Default: 365
+    AllowedValues: [30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]
+    Description: Days to keep Lambda execution and audit logs.
+  QueueVisibilityTimeoutSec:
+    Type: Number
+    Default: 300
+    MinValue: 30
+    MaxValue: 43200
+    Description: >-
+      Time a received job stays hidden. sqs_pull.py deletes the message as soon as the job is in the
+      watch folder (before UNICORN runs), so this only needs to cover the S3 download.
+
+Conditions:
+  UseVpc: !Not [!Equals [!Join ["", !Ref SubnetIds], ""]]
+  UseKms: !Not [!Equals [!Ref KmsKeyArn, ""]]
+  UseBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
+  UseAlerts: !Not [!Equals [!Ref AlertEmail, ""]]
+
+Resources:
+  # ------------------------------------------------------------------ secrets
+  BenchlingSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${NamePrefix}/${EnvName}/benchling"
+      Description: >-
+        Benchling App client_secret for the Packed Column Sync Lambda. Created with a placeholder;
+        set the real value once after deploy (aws secretsmanager put-secret-value). url and client_id
+        are passed as Lambda environment variables.
+      # Constant on purpose: CloudFormation only rewrites the secret when this property changes,
+      # so stack updates never overwrite the real client_secret set after deploy.
+      SecretString: '{"client_secret":"SET-AFTER-DEPLOY"}'
+      KmsKeyId: !If [UseKms, !Ref KmsKeyArn, !Ref AWS::NoValue]
+
+  # ------------------------------------------------------------------ storage
+  ImportBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain          # job packages are part of the sync record
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${NamePrefix}-${EnvName}-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: !If
+              - UseKms
+              - { SSEAlgorithm: "aws:kms", KMSMasterKeyID: !Ref KmsKeyArn }
+              - { SSEAlgorithm: AES256 }
+            BucketKeyEnabled: !If [UseKms, true, !Ref AWS::NoValue]
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-job-packages
+            Status: Enabled
+            Prefix: unicorn-sync/
+            ExpirationInDays: !Ref ImportRetentionDays
+            NoncurrentVersionExpiration: { NoncurrentDays: 30 }
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 }
+
+  ImportBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ImportBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!GetAtt ImportBucket.Arn, !Sub "${ImportBucket.Arn}/*"]
+            Condition: { Bool: { "aws:SecureTransport": "false" } }
+
+  # ------------------------------------------------------------------ queue
+  JobQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${NamePrefix}-${EnvName}.fifo"
+      FifoQueue: true
+      # The Lambda sets MessageDeduplicationId = content hash itself (sync/import_file.py).
+      ContentBasedDeduplication: false
+      VisibilityTimeout: !Ref QueueVisibilityTimeoutSec
+      ReceiveMessageWaitTimeSeconds: 20  # long polling, matches sqs_pull.py
+      MessageRetentionPeriod: 345600     # 4 days - covers a weekend with the UNICORN host down
+      KmsMasterKeyId: !If [UseKms, !Ref KmsKeyArn, !Ref AWS::NoValue]
+      SqsManagedSseEnabled: !If [UseKms, !Ref AWS::NoValue, true]
+
+  # ------------------------------------------------------------------ network
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: UseVpc
+    Properties:
+      GroupDescription: Packed Column Sync Lambda - outbound HTTPS only (Benchling, AWS APIs)
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS }
+
+  # ------------------------------------------------------------------ logging
+  FunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain          # audit trail
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${NamePrefix}-${EnvName}"
+      RetentionInDays: !Ref LogRetentionDays
+      # A customer key here needs a key policy granting logs.<region>.amazonaws.com.
+      KmsKeyId: !If [UseKms, !Ref KmsKeyArn, !Ref AWS::NoValue]
+
+  # ------------------------------------------------------------------ IAM
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${NamePrefix}-${EnvName}-lambda"
+      PermissionsBoundary: !If [UseBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns: !If
+        - UseVpc
+        - [!Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"]
+        - !Ref AWS::NoValue
+      Policies:
+        - PolicyName: packed-column-sync
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "${FunctionLogGroup.Arn}"
+              - Sid: ReadBenchlingSecret
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref BenchlingSecret
+              - Sid: WriteJobPackages
+                Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "${ImportBucket.Arn}/unicorn-sync/*"
+              - Sid: QueueJobs
+                Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt JobQueue.Arn
+              - !If
+                - UseAlerts
+                - Sid: PublishFailureAlerts   # sync/notify.py
+                  Effect: Allow
+                  Action: sns:Publish
+                  Resource: !Ref FailureTopic
+                - !Ref AWS::NoValue
+              - Sid: AsyncSelfInvoke    # webhook is acked fast, sync runs in an async self-invoke
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${NamePrefix}-${EnvName}"
+              - !If
+                - UseKms
+                - Sid: UseKmsKey
+                  Effect: Allow
+                  Action: [kms:Decrypt, kms:GenerateDataKey]
+                  Resource: !Ref KmsKeyArn
+                - !Ref AWS::NoValue
+
+  ConsumerPolicy:
+    # Attach to the identity the UNICORN host uses (IAM role / SSO permission set) - see README.
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${NamePrefix}-${EnvName}-unicorn-consumer"
+      Description: On-prem UNICORN polling agent - read jobs from SQS/S3 and report results to the Lambda.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ConsumeJobs
+            Effect: Allow
+            Action: [sqs:ReceiveMessage, sqs:DeleteMessage, sqs:ChangeMessageVisibility, sqs:GetQueueAttributes]
+            Resource: !GetAtt JobQueue.Arn
+          - Sid: ReadJobPackages
+            Effect: Allow
+            Action: s3:GetObject
+            Resource: !Sub "${ImportBucket.Arn}/unicorn-sync/*"
+          - Sid: ReportCompletion   # watch_service.ps1 Report-Completion -> canvas Synced/Failed
+            Effect: Allow
+            Action: lambda:InvokeFunction
+            Resource: !GetAtt SyncFunction.Arn
+          - !If
+            - UseKms
+            - Sid: UseKmsKey
+              Effect: Allow
+              Action: kms:Decrypt
+              Resource: !Ref KmsKeyArn
+            - !Ref AWS::NoValue
+
+  # ------------------------------------------------------------------ Lambda
+  DependencyLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: !Sub "${NamePrefix}-${EnvName}-deps"
+      Description: benchling-sdk and dependencies (requirements.txt)
+      Content:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref LayerS3Key
+      CompatibleRuntimes: [python3.14]
+      CompatibleArchitectures: [x86_64]
+
+  SyncFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${NamePrefix}-${EnvName}"
+      Description: Benchling Packed Column -> UNICORN Column Type import job (S3 + SQS)
+      Runtime: python3.14
+      Architectures: [x86_64]
+      Handler: lambda_function.lambda_handler
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref CodeS3Key
+      Layers: [!Ref DependencyLayer]
+      Role: !GetAtt FunctionRole.Arn
+      MemorySize: 512
+      Timeout: 300
+      LoggingConfig:
+        LogGroup: !Ref FunctionLogGroup
+        LogFormat: Text
+      VpcConfig: !If
+        - UseVpc
+        - SecurityGroupIds: [!Ref LambdaSecurityGroup]
+          SubnetIds: !Ref SubnetIds
+        - !Ref AWS::NoValue
+      Environment:
+        Variables:
+          BENCHLING_SECRET_ID: !Ref BenchlingSecret
+          BENCHLING_URL: !Ref BenchlingUrl
+          BENCHLING_CLIENT_ID: !Ref BenchlingClientId
+          APP_DEFINITION_ID: !Ref AppDefinitionId
+          PACKED_COLUMN_SCHEMA_ID: !Ref PackedColumnSchemaId
+          RESIN_LIBRARY_SCHEMA_ID: !Ref ResinLibrarySchemaId
+          COLUMN_PACKING_SCHEMA_ID: !Ref ColumnPackingSchemaId
+          IMPORT_BUCKET: !Ref ImportBucket
+          IMPORT_PREFIX: unicorn-sync/incoming
+          SQS_QUEUE_URL: !Ref JobQueue
+          IMPORT_ACCESS_SCOPE: !Ref ImportAccessScope
+          COLUMN_NAME_TEMPLATE: !Ref ColumnNameTemplate
+          MAX_LINEAR_FLOW_FACTOR: !Ref MaxLinearFlowFactor
+          LOG_LEVEL: !Ref LogLevel
+          FAILURE_TOPIC_ARN: !If [UseAlerts, !Ref FailureTopic, ""]
+
+  # A failed async sync is already reported on the canvas; don't silently re-run it.
+  SyncFunctionAsyncConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref SyncFunction
+      Qualifier: $LATEST
+      MaximumRetryAttempts: 0
+      MaximumEventAgeInSeconds: 3600
+
+  # ------------------------------------------------------------------ webhook endpoint
+  # Public URL for the Benchling webhook; the code verifies every request's signature
+  # against AppDefinitionId (lambda_function._handle_http) before doing anything.
+  WebhookUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt SyncFunction.Arn
+      AuthType: NONE
+
+  WebhookUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SyncFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+  # Function URLs created since late 2025 also need lambda:InvokeFunction, scoped to URL calls.
+  WebhookInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SyncFunction
+      Action: lambda:InvokeFunction
+      Principal: "*"
+      InvokedViaFunctionUrl: true
+
+  # ------------------------------------------------------------------ failure alerts (optional)
+  FailureTopic:
+    Type: AWS::SNS::Topic
+    Condition: UseAlerts
+    Properties:
+      TopicName: !Sub "${NamePrefix}-${EnvName}-failures"
+      DisplayName: UNICORN Sync
+      KmsMasterKeyId: !If [UseKms, !Ref KmsKeyArn, !Ref AWS::NoValue]
+
+  FailureEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: UseAlerts
+    Properties:
+      TopicArn: !Ref FailureTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+Outputs:
+  WebhookUrl:
+    Description: Set as the webhook URL of the Benchling App (Developer Console).
+    Value: !GetAtt WebhookUrl.FunctionUrl
+  FunctionName:
+    Description: LAMBDA_FUNCTION_NAME in the UNICORN host's .env
+    Value: !Ref SyncFunction
+  QueueUrl:
+    Description: SQS_QUEUE_URL in the UNICORN host's .env
+    Value: !Ref JobQueue
+  ImportBucketName:
+    Value: !Ref ImportBucket
+  BenchlingSecretArn:
+    Description: Set the Benchling client_secret here once after deploy.
+    Value: !Ref BenchlingSecret
+  ConsumerPolicyArn:
+    Description: Attach to the UNICORN host's AWS identity.
+    Value: !Ref ConsumerPolicy
+  ConsumerPolicyName:
+    Description: Name to reference from an IAM Identity Center permission set.
+    Value: !Sub "${NamePrefix}-${EnvName}-unicorn-consumer"
+  FailureTopicArn:
+    Condition: UseAlerts
+    Description: SNS topic for sync-failure emails (add more subscribers here).
+    Value: !Ref FailureTopic

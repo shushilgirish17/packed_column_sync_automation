@@ -263,7 +263,39 @@ else {
 }
 
 # ---------------------------------------------------------------------------
-# 2. Ensure Column Handling is open
+# 1b. Restore minimized UNICORN windows. A minimized WinForms window exposes
+#     NOTHING to UI Automation (0 elements), so the Column Handling button
+#     can't be found - and minimizing also closes the Column Handling dialog.
+#     Someone minimizing UNICORN is a normal event, not a fault.
+# ---------------------------------------------------------------------------
+$u = Get-Unicorn
+if ($u) {
+    foreach ($h in [Boot]::Visible($u.Id)) {
+        if ([W32Focus]::IsIconic($h)) {
+            Log "restoring minimized UNICORN window '$([Boot]::Text($h))'"
+            [void][W32Focus]::ShowWindow($h, 9)   # SW_RESTORE
+            # The UIA tree is rebuilt after restore; wait until it is populated again.
+            for ($i = 0; $i -lt 20; $i++) {
+                Start-Sleep -Milliseconds 500
+                if (-not [W32Focus]::IsIconic($h) -and
+                    $AE::FromHandle($h).FindFirst($TS::Children, $COND::TrueCondition)) { break }
+            }
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# 2. Clear any dialog left open over UNICORN (a half-filled 'New Column Type',
+#    an 'Edit Column type', a file browser, a message box...). Any of them
+#    blocks every click the sync makes. They are cancelled, never saved.
+# ---------------------------------------------------------------------------
+try {
+    $cleared = @(Clear-UnicornStrayDialogs -Keep @($cfg.ColumnDialogTitle) -ProcessName $cfg.UnicornProcess)
+    if ($cleared.Count) { Log "closed stray UNICORN dialog(s) without saving: $($cleared -join ', ')" }
+} catch { Log $_.Exception.Message; exit 1 }
+
+# ---------------------------------------------------------------------------
+# 3. Ensure Column Handling is open
 # ---------------------------------------------------------------------------
 if (ColumnHandling-Open) {
     Log "Column Handling already open - ready"

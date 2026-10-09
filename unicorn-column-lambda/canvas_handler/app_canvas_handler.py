@@ -16,6 +16,7 @@ from benchling_sdk.models import (AppCanvasCreate, AppCanvasUpdate, ButtonUiBloc
 import config
 from sync.benchling_reader import BenchlingReader
 from sync.models import ColumnOutcome, SyncError
+from sync.notify import notify_failure
 from sync.packed_column_sync import sync_columns
 
 log = logging.getLogger(__name__)
@@ -158,10 +159,13 @@ def handle_canvas_interaction(body, benchling):
         outcomes = sync_columns(reader, column_ids, trigger)
     except SyncError as e:  # run-level failure (auth, IP allowlist, Benchling down)
         log.exception("Sync run failed")
+        notify_failure("Sync run (before any column)", str(e), error_kind=e.kind, user=user, entry_id=entry_id)
         _finish(benchling, canvas_id, selected, _prepend_error(existing_markdown, e.kind, str(e)))
         return
     except Exception as e:
         log.exception("Sync run failed unexpectedly")
+        notify_failure("Sync run (before any column)", f"{type(e).__name__}: {e}", error_kind="Unexpected Error",
+                       user=user, entry_id=entry_id)
         _finish(benchling, canvas_id, selected, _prepend_error(existing_markdown, "Unexpected Error", str(e)))
         return
 
@@ -210,6 +214,9 @@ def report_column_result(body: dict, benchling) -> None:
         column_type_name=body.get("column_type_name"),
         warnings=body.get("warnings") or [],
     )
+    if outcome.result in ("Failed", "Failure"):
+        notify_failure("UNICORN import / update", outcome.message, outcome.registry_id, outcome.column_name,
+                       outcome.column_id)
     canvas = benchling.apps.get_canvas_by_id(canvas_id=canvas_id)
     anchor = str(outcome.registry_id or outcome.column_id)
     patched = _patch_column_block(_results_block_value(canvas), anchor, _column_block(outcome))
