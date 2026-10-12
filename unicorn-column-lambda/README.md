@@ -13,7 +13,7 @@ Benchling canvas --webhook--> Lambda --> S3 (<stem>.zip + <stem>.job.json) + SQS
 ```
 
 AWS services: **Lambda, Secrets Manager, S3, SQS, CloudWatch Logs** - all created by
-`infra/template.yaml` (see [infra/README.md](infra/README.md)).
+`infra/template.yaml` (see [infra/README.md](../infra/README.md)).
 
 ## Layout
 ```
@@ -65,7 +65,7 @@ python build.py          # dist/packed-column-sync-layer.zip + dist/packed-colum
 python build.py --code   # after a code change: code zip only
 ```
 Layer zip -> Lambda layer (Python 3.14, x86_64). Code zip -> the function. Rebuild the layer only when
-`requirements.txt` changes. Deploy with CloudFormation: [infra/README.md](infra/README.md).
+`requirements.txt` changes. Deploy with CloudFormation: [infra/README.md](../infra/README.md).
 
 Environment variables (set by the template): `BENCHLING_SECRET_ID` (Secrets Manager, holds
 `client_secret`) + `BENCHLING_URL` + `BENCHLING_CLIENT_ID`, `PACKED_COLUMN_SCHEMA_ID`, `RESIN_LIBRARY_SCHEMA_ID`,

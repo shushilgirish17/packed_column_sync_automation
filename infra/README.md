@@ -22,12 +22,13 @@
    (`VpcId` + `SubnetIds` both empty = Lambda outside a VPC, which the Lilly IP allowlist will block).
 
 ## Deploy (console)
-1. Build both zips into `dist/` (from `unicorn-column-lambda/`):
+1. Build both zips into `unicorn-column-lambda/dist/` (run from `unicorn-column-lambda/`, not here):
    ```bash
+   cd ../unicorn-column-lambda
    python build.py
    ```
-2. **S3 console** -> artifact bucket -> upload `dist/packed-column-sync.zip` and
-   `dist/packed-column-sync-layer.zip` under the prefix `packed-column-sync/`
+2. **S3 console** -> artifact bucket -> upload `unicorn-column-lambda/dist/packed-column-sync.zip` and
+   `unicorn-column-lambda/dist/packed-column-sync-layer.zip` under the prefix `packed-column-sync/`
    (keys must match `CodeS3Key` / `LayerS3Key`).
 3. **CloudFormation console** -> Create stack -> *With new resources* -> *Upload a template file* ->
    `infra/template.yaml`.
@@ -36,7 +37,7 @@
    **"I acknowledge that AWS CloudFormation might create IAM resources with custom names"**.
 6. Review, then Submit. Keep the change set / events as change-control evidence.
 
-Same with the CLI (after step 2):
+Same with the CLI (run from the repo root, after step 2):
 ```bash
 aws cloudformation deploy --template-file infra/template.yaml --stack-name packed-column-sync-dev --parameter-overrides file://infra/params-dev.json --capabilities CAPABILITY_NAMED_IAM --no-execute-changeset --tags Application=PackedColumnSync Environment=dev
 ```
@@ -66,10 +67,10 @@ aws cloudformation describe-stacks --stack-name packed-column-sync-dev --query "
 ```
 
 ## Updates
-- **Code change:** `python build.py --code`, upload the zip under a **new key** (e.g.
+- **Code change:** `python build.py --code` (from `unicorn-column-lambda/`), upload the zip under a **new key** (e.g.
   `packed-column-sync/packed-column-sync-v2.zip`), then *Update stack* -> *Use current template* and set
   `CodeS3Key` to the new key. Re-using the same key does NOT update the Lambda.
-- **Dependency change:** `python build.py`, new key for the layer zip, update `LayerS3Key` the same way.
+- **Dependency change:** `python build.py` (from `unicorn-column-lambda/`), new key for the layer zip, update `LayerS3Key` the same way.
 - **Parameter change:** *Update stack* -> *Use current template* -> change the value.
 
 ## Notes
