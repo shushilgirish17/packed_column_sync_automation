@@ -8,14 +8,16 @@ Logic:
   * If UNICORN is already running with a visible window -> skip launch/login,
     just make sure Column Handling is open.
   * If not running -> launch it (Start-menu search, or UNICORN_EXE if set),
-    enter the password from .env, open the module (default Evaluation), then
-    open Column Handling.
+    enter the password from Windows Credential Manager, open the module
+    (default Evaluation), then open Column Handling.
 
 Exit codes: 0 = Column Handling is open and ready, 1 = could not get there.
 
-SECURITY: the UNICORN password is read on demand via Get-EnvValue
-('UNICORN_PASSWORD') and typed with SendKeys. It is never written to the
-console, a log, or the printable config object.
+SECURITY: the UNICORN password is read on demand from the Windows Credential
+Manager (generic credential 'UNICORN_AGENT') and typed with SendKeys. It is
+never written to the console, a log, the printable config object, or a file
+on disk. Add it once with:
+    cmdkey /generic:UNICORN_AGENT /user:<unicorn-username> /pass:<password>
 
 NOTE: the launch + login + module-select steps drive dialogs that can only be
 seen when UNICORN is NOT already running, so their control selectors are
@@ -57,6 +59,46 @@ public static List<IntPtr> Visible(int pid){var o=new List<IntPtr>();
 public static IntPtr FindEqAnyPid(string title){IntPtr f=IntPtr.Zero;
  EnumWindows((h,l)=>{if(IsWindowVisible(h)){var s=new StringBuilder(400);GetWindowTextW(h,s,400);if(s.ToString()==title){f=h;return false;}}return true;},IntPtr.Zero);return f;}
 public static string Text(IntPtr h){var s=new StringBuilder(400);GetWindowTextW(h,s,400);return s.ToString();}}
+
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+public struct CREDENTIAL {
+    public uint Flags;
+    public uint Type;
+    public string TargetName;
+    public string Comment;
+    public long LastWritten;
+    public uint CredentialBlobSize;
+    public IntPtr CredentialBlob;
+    public uint Persist;
+    public uint AttributeCount;
+    public IntPtr Attributes;
+    public string TargetAlias;
+    public string UserName;
+}
+
+public class CredMan {
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern bool CredRead(string target, uint type, int reservedFlag, out IntPtr credentialPtr);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    static extern void CredFree(IntPtr cred);
+
+    // Try CRED_TYPE_GENERIC (1) then CRED_TYPE_DOMAIN_PASSWORD (2) - the
+    // Control Panel "Add a Windows Credential" and "Add a generic credential"
+    // dialogs can store either, and this call must find whichever was used.
+    public static string ReadPassword(string target) {
+        foreach (uint type in new uint[] { 1, 2 }) {
+            IntPtr ptr;
+            if (CredRead(target, type, 0, out ptr)) {
+                try {
+                    var cred = (CREDENTIAL)Marshal.PtrToStructure(ptr, typeof(CREDENTIAL));
+                    if (cred.CredentialBlobSize == 0) continue;
+                    return Marshal.PtrToStringUni(cred.CredentialBlob, (int)(cred.CredentialBlobSize / 2));
+                } finally { CredFree(ptr); }
+            }
+        }
+        return null;
+    }
+}
 "@
 
 $AE   = [System.Windows.Automation.AutomationElement]
@@ -147,8 +189,8 @@ function Do-Login {
     }
     if (-not $lblPw -or -not $btnOK) { Log "  login controls not found"; return $false }
 
-    $pw = Get-EnvValue 'UNICORN_PASSWORD'
-    if (-not $pw) { Log "  UNICORN_PASSWORD not set in .env - aborting"; return $false }
+    $pw = [CredMan]::ReadPassword('UNICORN_AGENT')
+    if (-not $pw) { Log "  no 'UNICORN_AGENT' credential in Windows Credential Manager - aborting"; return $false }
 
     # Focus the password field: same row as the 'Password' label, same column
     # as the User Name box (the field itself isn't exposed to UIA).

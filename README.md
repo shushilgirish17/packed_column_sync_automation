@@ -108,6 +108,17 @@ anywhere — no absolute paths baked in.
   (`"C:\Program Files (x86)\Windows Application Driver\WinAppDriver.exe"`).
   Needed for clicks; not needed for the offline `generate_import.py` or the
   `.NET`-UIA-only reads.
+- **Developer Mode enabled** (Windows Settings → Update & Security → For
+  Developers → Developer mode). This is a Microsoft requirement for
+  WinAppDriver itself, not specific to this project — WinAppDriver will not
+  install/run without it. On a Lilly-managed host this is a policy setting
+  that needs Cyber Security sign-off, not something a user can silently turn
+  on.
+- **A Windows Credential Manager entry** named `UNICORN_AGENT` holding the
+  UNICORN login username/password (`cmdkey /generic:UNICORN_AGENT
+  /user:<unicorn-username> /pass:<password>`, or Control Panel → Credential
+  Manager → Windows Credentials → Add a Windows Credential). Read by
+  `tools/ensure_unicorn.ps1`; never stored in `.env` or any file.
 - **Python 3**. The SQS/S3 producer uses `boto3`; the local automation and
   archive tools otherwise use the standard library.
 

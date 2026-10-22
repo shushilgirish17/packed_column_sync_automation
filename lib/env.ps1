@@ -59,8 +59,10 @@ function Get-ProjectConfig {
 function Get-EnvValue {
     <#
       Read a single key from the real environment (first) or the .env file.
-      Used for SECRETS (e.g. UNICORN_PASSWORD) that must NOT live on the
-      printable Get-ProjectConfig object, so they can't leak into a log dump.
+      Used for SECRETS that must NOT live on the printable Get-ProjectConfig
+      object, so they can't leak into a log dump. The UNICORN login password
+      is no longer one of these - it comes from Windows Credential Manager
+      (see tools/ensure_unicorn.ps1's [CredMan]::ReadPassword).
     #>
     param([Parameter(Mandatory)][string]$Key, [string]$Default = '')
     $v = [Environment]::GetEnvironmentVariable($Key)

@@ -2,7 +2,8 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Packed Column Sync (ELYC_PackedColumnSync) - Benchling App Canvas webhook -> Lambda ->
   S3 job package + SQS FIFO job message, consumed by the on-prem UNICORN polling agent
-  (tools/sqs_pull.py + tools/watch_service.ps1). See infra/README.md for deployment.
+  (tools/sqs_pull.py + tools/watch_service.ps1). See infra/README.md for deployment. Build the Lambda
+  code first from unicorn-column-lambda/ (python build.py).
 
 # Deployable straight from the console: build the zips (python build.py), upload them to an S3
 # bucket in the same region, and give that bucket + keys as ArtifactBucket / CodeS3Key / LayerS3Key.

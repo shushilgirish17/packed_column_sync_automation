@@ -10,7 +10,7 @@ import config
 from sync.models import AuthenticationError
 
 _KEYS = ("url", "client_id", "client_secret")
-_UNSET_SECRET = "SET-AFTER-DEPLOY"  # what infra/template.yaml creates the secret with
+_UNSET_SECRET = "SET-AFTER-DEPLOY"  # dev or prod placeholder; not a real secret
 _client = None
 
 
